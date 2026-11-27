@@ -189,8 +189,9 @@ export default function ResumePage() {
   // Import modal state
   const [showImport, setShowImport] = useState(false)
   const [importText, setImportText] = useState('')
-  const [importing, setImporting] = useState(false)
+  const [importing, setImporting] = useState(false)  // background processing
   const [importError, setImportError] = useState('')
+  const [importToast, setImportToast] = useState<'parsing' | 'done' | 'error' | null>(null)
 
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/')
@@ -225,65 +226,77 @@ export default function ResumePage() {
     }
   }
 
-  const handleImport = async () => {
-    if (!importText.trim() || importText.length < 50) return
-    setImporting(true)
-    setImportError('')
-    try {
-      const res = await fetch('/api/resume/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: importText }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Import failed')
-      if (data.resume) {
-        // Map AI field names → ResumeData interface field names
-        const r = data.resume
-        const mapped: ResumeData = {
-          name: r.name || '',
-          email: r.email || '',
-          phone: r.phone || '',
-          linkedin: r.linkedin || '',
-          github: r.github || '',
-          summary: r.summary || '',
-          education: (r.education || []).map((e: { institution?: string; degree?: string; year?: string; cgpa?: string; score?: string }) => ({
-            institution: e.institution || '',
-            degree: e.degree || '',
-            year: e.year || '',
-            score: e.cgpa || e.score || '',
-          })),
-          skills: (r.skills || []).map((s: { category?: string; items?: string[] | string }) => ({
-            category: s.category || '',
-            items: Array.isArray(s.items) ? s.items.join(', ') : (s.items || ''),
-          })),
-          projects: [
-            // Experience entries converted to projects
-            ...(r.experience || []).map((e: { role?: string; company?: string; duration?: string; points?: string[] }) => ({
-              title: e.role ? `${e.role}${e.company ? ' @ ' + e.company : ''}` : '',
-              tech: e.duration || '',
-              bullets: Array.isArray(e.points) ? e.points : [],
-            })),
-            // Actual projects
-            ...(r.projects || []).map((p: { name?: string; title?: string; tech?: string; points?: string[]; bullets?: string[] }) => ({
-              title: p.name || p.title || '',
-              tech: p.tech || '',
-              bullets: Array.isArray(p.points) ? p.points : (Array.isArray(p.bullets) ? p.bullets : []),
-            })),
-          ],
-          certifications: r.certifications || [],
-          languages: r.languages?.length ? r.languages : ['English'],
-          declaration: true,
-        }
-        setResume(mapped)
-        setShowImport(false)
-        setImportText('')
-      }
-    } catch (e: unknown) {
-      setImportError(e instanceof Error ? e.message : 'AI parsing failed')
-    } finally {
-      setImporting(false)
+  // Maps raw AI response → ResumeData shape
+  function mapAIResume(r: Record<string, unknown>): ResumeData {
+    type EduRaw = { institution?: string; degree?: string; year?: string; cgpa?: string; score?: string }
+    type SkillRaw = { category?: string; items?: string[] | string }
+    type ExpRaw = { role?: string; company?: string; duration?: string; points?: string[] }
+    type ProjRaw = { name?: string; title?: string; tech?: string; points?: string[]; bullets?: string[] }
+    return {
+      name: (r.name as string) || '',
+      email: (r.email as string) || '',
+      phone: (r.phone as string) || '',
+      linkedin: (r.linkedin as string) || '',
+      github: (r.github as string) || '',
+      summary: (r.summary as string) || '',
+      education: ((r.education as EduRaw[]) || []).map(e => ({
+        institution: e.institution || '',
+        degree: e.degree || '',
+        year: e.year || '',
+        score: e.cgpa || e.score || '',
+      })),
+      skills: ((r.skills as SkillRaw[]) || []).map(s => ({
+        category: s.category || '',
+        items: Array.isArray(s.items) ? s.items.join(', ') : (s.items || ''),
+      })),
+      projects: [
+        ...((r.experience as ExpRaw[]) || []).map(e => ({
+          title: e.role ? `${e.role}${e.company ? ' @ ' + e.company : ''}` : '',
+          tech: e.duration || '',
+          bullets: Array.isArray(e.points) ? e.points : [],
+        })),
+        ...((r.projects as ProjRaw[]) || []).map(p => ({
+          title: p.name || p.title || '',
+          tech: p.tech || '',
+          bullets: Array.isArray(p.points) ? p.points : (Array.isArray(p.bullets) ? p.bullets : []),
+        })),
+      ],
+      certifications: (r.certifications as string[]) || [],
+      languages: ((r.languages as string[])?.length) ? (r.languages as string[]) : ['English'],
+      declaration: true,
     }
+  }
+
+  const handleImport = () => {
+    if (!importText.trim() || importText.length < 50) return
+
+    // ── Close modal instantly — user doesn't have to wait ──
+    const textToProcess = importText
+    setShowImport(false)
+    setImportText('')
+    setImportError('')
+    setImporting(true)
+    setImportToast('parsing')
+
+    // Fire-and-forget: runs in background while user can scroll the form
+    fetch('/api/resume/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: textToProcess }),
+    })
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok || !data.resume) throw new Error(data.error || 'Import failed')
+        setResume(mapAIResume(data.resume as Record<string, unknown>))
+        setImportToast('done')
+        setTimeout(() => setImportToast(null), 4000)
+      })
+      .catch((e: unknown) => {
+        setImportError(e instanceof Error ? e.message : 'AI parsing failed')
+        setImportToast('error')
+        setTimeout(() => setImportToast(null), 6000)
+      })
+      .finally(() => setImporting(false))
   }
 
   const handleAiEdit = async () => {
@@ -343,6 +356,57 @@ export default function ResumePage() {
     <>
       <Navbar />
 
+      {/* ── Background Import Toast ── */}
+      {importToast && (
+        <div style={{
+          position: 'fixed', bottom: 24, right: 24, zIndex: 200,
+          borderRadius: 12, padding: '14px 20px',
+          display: 'flex', alignItems: 'center', gap: 12,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          border: '1px solid',
+          transition: 'all 0.3s',
+          ...(importToast === 'parsing' ? {
+            background: '#0d1a2e', borderColor: 'rgba(74,144,217,0.4)',
+          } : importToast === 'done' ? {
+            background: '#0d1f17', borderColor: 'rgba(39,174,96,0.4)',
+          } : {
+            background: '#1f0d0d', borderColor: 'rgba(231,76,60,0.4)',
+          }),
+        }}>
+          {importToast === 'parsing' && (
+            <>
+              <div className="spinner" style={{ width: 18, height: 18, flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#4A90D9' }}>Parsing your resume...</div>
+                <div style={{ fontSize: 11, color: '#6090c0', marginTop: 2 }}>AI is reading your resume — fields will auto-fill when done</div>
+              </div>
+            </>
+          )}
+          {importToast === 'done' && (
+            <>
+              <span style={{ fontSize: 20 }}>✅</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#27ae60' }}>Resume imported!</div>
+                <div style={{ fontSize: 11, color: '#50906a', marginTop: 2 }}>All fields filled — review and save</div>
+              </div>
+            </>
+          )}
+          {importToast === 'error' && (
+            <>
+              <span style={{ fontSize: 20 }}>⚠️</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#e74c3c' }}>Import failed</div>
+                <div style={{ fontSize: 11, color: '#a05050', marginTop: 2 }}>{importError || 'Try again'}</div>
+              </div>
+            </>
+          )}
+          <button onClick={() => setImportToast(null)} style={{
+            background: 'transparent', border: 'none', color: '#6060a0',
+            fontSize: 18, cursor: 'pointer', marginLeft: 8, lineHeight: 1,
+          }}>×</button>
+        </div>
+      )}
+
       {/* ── Import Modal ── */}
       {showImport && (
         <div style={{
@@ -400,15 +464,11 @@ export default function ResumePage() {
               }}>Cancel</button>
               <button
                 onClick={handleImport}
-                disabled={importing || importText.length < 50}
+                disabled={importText.length < 50}
                 className="btn-primary"
-                style={{ flex: 2, padding: '10px', fontSize: 14, opacity: importing || importText.length < 50 ? 0.6 : 1 }}
+                style={{ flex: 2, padding: '10px', fontSize: 14, opacity: importText.length < 50 ? 0.6 : 1 }}
               >
-                {importing ? (
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                    <div className="spinner" style={{ width: 16, height: 16 }} /> Parsing with AI...
-                  </span>
-                ) : '✨ Parse & Fill All Fields →'}
+                ✨ Parse & Fill All Fields →
               </button>
             </div>
 
