@@ -69,8 +69,39 @@ export default function OnboardPage() {
     if (status === 'authenticated') {
       const user = session?.user as { onboardingCompleted?: boolean; naukriConnected?: boolean } | undefined
       if (isPrefsSetup) {
-        setStep('prefs') // let them edit prefs regardless of onboarding state
-      } else if (!isReconnect && user?.onboardingCompleted && user?.naukriConnected) {
+        // Auto-extract prefs from stored Naukri profile + save + redirect — no form
+        ;(async () => {
+          try {
+            const res = await fetch('/api/naukri/profile')
+            const data = res.ok ? await res.json() : null
+            const stored = data?.naukri?.profile      // stored NaukriProfile from DB
+            const existingPrefs = data?.user?.preferences
+
+            const rawRole = stored?.profileHeadline || stored?.name || ''
+            const targetRole = rawRole.split('|')[0]?.split('-')[0]?.split('/')?.[0]?.trim()
+              || existingPrefs?.targetRole
+              || 'Software Engineer'
+            const skills: string[] = stored?.skills?.length
+              ? stored.skills
+              : (existingPrefs?.skills || [])
+            const locations: string[] = stored?.currentLocation
+              ? (LOCATIONS.includes(stored.currentLocation) ? [stored.currentLocation] : (existingPrefs?.locations || []))
+              : (existingPrefs?.locations || [])
+            const experience = typeof stored?.experience === 'number'
+              ? stored.experience
+              : (existingPrefs?.experience ?? 0)
+
+            await fetch('/api/naukri/profile', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ targetRole, skills, locations, experience, wfhPreference: existingPrefs?.wfhPreference || 'any' }),
+            })
+          } catch { /* non-fatal */ }
+          router.push('/dashboard')
+        })()
+        return
+      }
+      if (!isReconnect && user?.onboardingCompleted && user?.naukriConnected) {
         router.push('/dashboard')
       } else if (!isReconnect && user?.naukriConnected) {
         setStep('prefs')
