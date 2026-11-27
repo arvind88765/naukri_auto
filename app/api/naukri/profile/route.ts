@@ -123,7 +123,7 @@ const PrefsSchema = z.object({
   locations: z.array(z.string()).optional(),
   minSalary: z.number().optional(),
   maxSalary: z.number().optional(),
-  wfhPreference: z.enum(['full-wfh', 'hybrid', 'office']).optional(),
+  wfhPreference: z.enum(['full-wfh', 'hybrid', 'office', 'remote', 'onsite', 'any']).optional(),
   skills: z.array(z.string()).optional(),
   noticePeriod: z.string().optional(),
   autoApplyEnabled: z.boolean().optional(),

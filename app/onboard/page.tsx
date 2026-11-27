@@ -2,7 +2,7 @@
 
 import { useSession } from 'next-auth/react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Navbar from '@/components/Navbar'
 
 
@@ -45,6 +45,7 @@ export default function OnboardPage() {
   // isPrefsSetup: start on 'naukri' so the prefs form never flashes — effect will redirect
   const [step, setStep] = useState<Step>('naukri')
   const [autoSaving, setAutoSaving] = useState(isPrefsSetup)
+  const autoSaveFired = useRef(false)
 
   // Naukri connect state
   const [naukriEmail, setNaukriEmail] = useState('')
@@ -72,6 +73,8 @@ export default function OnboardPage() {
       const user = session?.user as { onboardingCompleted?: boolean; naukriConnected?: boolean } | undefined
       if (isPrefsSetup) {
         // Auto-extract prefs from stored Naukri profile + save + redirect — no form shown
+        if (autoSaveFired.current) return  // prevent double-fire (StrictMode / session re-render)
+        autoSaveFired.current = true
         setAutoSaving(true)
         ;(async () => {
           try {
