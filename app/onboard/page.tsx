@@ -41,7 +41,8 @@ export default function OnboardPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const isReconnect = searchParams.get('reconnect') === '1'
-  const [step, setStep] = useState<Step>('naukri')
+  const isPrefsSetup = searchParams.get('setup') === 'prefs'
+  const [step, setStep] = useState<Step>(isPrefsSetup ? 'prefs' : 'naukri')
 
   // Naukri connect state
   const [naukriEmail, setNaukriEmail] = useState('')
@@ -67,7 +68,9 @@ export default function OnboardPage() {
     if (status === 'unauthenticated') router.push('/')
     if (status === 'authenticated') {
       const user = session?.user as { onboardingCompleted?: boolean; naukriConnected?: boolean } | undefined
-      if (!isReconnect && user?.onboardingCompleted && user?.naukriConnected) {
+      if (isPrefsSetup) {
+        setStep('prefs') // let them edit prefs regardless of onboarding state
+      } else if (!isReconnect && user?.onboardingCompleted && user?.naukriConnected) {
         router.push('/dashboard')
       } else if (!isReconnect && user?.naukriConnected) {
         setStep('prefs')

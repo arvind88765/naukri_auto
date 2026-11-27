@@ -101,6 +101,7 @@ export async function GET() {
       minMatchScore: user.min_match_score,
       preferences: user.preferences,
       hasResume: !!user.base_resume_text,
+      prefsComplete: !!(user.preferences?.targetRole && user.preferences.targetRole !== 'undefined'),
     },
     naukri: {
       profile: liveProfile || user.naukri_profile,

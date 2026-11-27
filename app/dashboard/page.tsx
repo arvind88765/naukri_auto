@@ -91,6 +91,7 @@ export default function DashboardPage() {
   const [autoApply, setAutoApply] = useState<boolean>(false)
   const [togglingAuto, setTogglingAuto] = useState(false)
   const [tokenExpired, setTokenExpired] = useState(false)
+  const [prefsComplete, setPrefsComplete] = useState(true) // assume complete until API says otherwise
 
   const fetchData = useCallback(async () => {
     try {
@@ -104,6 +105,7 @@ export default function DashboardPage() {
         setAutoApply(p.user?.auto_apply_enabled ?? p.user?.autoApplyEnabled ?? false)
         // Check if Naukri token has expired
         if (p.tokenExpired) setTokenExpired(true)
+        if (p.user?.prefsComplete === false) setPrefsComplete(false)
       }
       if (queueRes.ok) setQueue(await queueRes.json())
     } finally {
@@ -237,6 +239,51 @@ export default function DashboardPage() {
               }}
             >
               Reconnect Naukri →
+            </a>
+          </div>
+        )}
+
+        {/* Missing preferences banner */}
+        {!prefsComplete && !tokenExpired && (
+          <div style={{
+            background: 'linear-gradient(135deg, #1a2a1a, #1f3a1f)',
+            border: '1px solid #f0a500',
+            borderRadius: 12,
+            padding: '16px 20px',
+            marginBottom: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 24 }}>⚙️</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: '#f0c040', marginBottom: 2 }}>
+                  Job preferences not set
+                </div>
+                <div style={{ fontSize: 13, color: '#a08040' }}>
+                  The engine has no target role or skills to search for. Set your preferences to start auto-applying.
+                </div>
+              </div>
+            </div>
+            <a
+              href="/onboard?setup=prefs"
+              style={{
+                background: '#f0a500',
+                color: '#000',
+                border: 'none',
+                borderRadius: 8,
+                padding: '10px 20px',
+                fontWeight: 700,
+                fontSize: 14,
+                cursor: 'pointer',
+                textDecoration: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Set Preferences →
             </a>
           </div>
         )}

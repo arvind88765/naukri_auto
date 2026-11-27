@@ -170,6 +170,15 @@ async function _runApplyLoop(
 
   console.log(`[Engine] 🚀 _runApplyLoop | userId=${user.id} | targetRole="${prefs?.targetRole}" | skills=${JSON.stringify(prefs?.skills?.slice(0, 3))} | minScore=${minScore} | maxApplies=${maxApplies}`)
 
+  // Guard: preferences must have a targetRole — engine can't search without keywords
+  if (!prefs?.targetRole || prefs.targetRole === 'undefined') {
+    const msg = 'No job preferences set — please go to onboarding and fill in your target role, skills, and locations'
+    console.log(`[Engine] ✗ ${msg}`)
+    result.errors.push(msg)
+    result.duration = Date.now() - startTime
+    return result
+  }
+
   // Check today's apply count
   const today = new Date()
   today.setHours(0, 0, 0, 0)
