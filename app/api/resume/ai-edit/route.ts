@@ -9,20 +9,28 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite']
 
 async function gemini(prompt: string): Promise<string> {
-  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
-    }),
-  })
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+  for (const model of GEMINI_MODELS) {
+    const res = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+      }),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    }
+    const err = await res.text()
+    console.error(`[Gemini] ${model} failed (${res.status}):`, err.slice(0, 200))
+    if (res.status === 401 || res.status === 400) break
+  }
+  throw new Error('All Gemini models unavailable')
 }
 
 function parseJSON<T>(text: string, fallback: T): T {

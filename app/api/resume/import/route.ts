@@ -2,7 +2,12 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+// Try models in order — 3.8-flash is current, 3.5-flash-lite is fallback
+const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+]
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions)
@@ -77,26 +82,37 @@ RESUME TEXT:
 ${text.slice(0, 8000)}`
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 4096,
-        },
-      }),
-    })
-
-    if (!res.ok) {
-      const err = await res.text()
-      console.error('Gemini error:', err)
-      return NextResponse.json({ error: 'AI parsing failed' }, { status: 500 })
+    // Try each model in order until one works
+    let data: Record<string, unknown> | null = null
+    let lastErr = ''
+    for (const model of GEMINI_MODELS) {
+      const res = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
+        }),
+      })
+      if (res.ok) {
+        data = await res.json()
+        console.log(`[Gemini] using model: ${model}`)
+        break
+      }
+      const errText = await res.text()
+      console.error(`[Gemini] ${model} failed (${res.status}):`, errText.slice(0, 200))
+      lastErr = errText
+      // Only fall through on 404/503 — stop on auth errors
+      if (res.status === 401 || res.status === 400) break
     }
 
-    const data = await res.json()
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    if (!data) {
+      console.error('All Gemini models failed. Last error:', lastErr)
+      return NextResponse.json({ error: 'AI unavailable — try again in a moment' }, { status: 500 })
+    }
+
+    const raw = (data as { candidates?: { content?: { parts?: { text?: string }[] } }[] })
+      ?.candidates?.[0]?.content?.parts?.[0]?.text || ''
 
     // Strip markdown code blocks if present
     const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
