@@ -125,99 +125,134 @@ export class NaukriClient {
   }
 
   /**
-   * LOGIN — tries Naukri web API first, then NMA mobile gateway
+   * LOGIN — tries multiple Naukri endpoints in sequence
    */
   static async login(email: string, password: string): Promise<LoginResult> {
     const L = '[NaukriClient.login]'
 
-    // ── Attempt 1: Naukri web login ──
-    console.log(`${L} ── Attempt 1: naukri.com web login ──`)
-    console.log(`${L}   URL: POST https://www.naukri.com/central-login-services/v0/login`)
-    console.log(`${L}   email: ${email}`)
-    try {
-      const res = await fetch(`${NAUKRI_BASE}/central-login-services/v0/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'appid': '105',
-          'clientid': 'd3skt0p',
-          'systemid': '103',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Origin': 'https://www.naukri.com',
-          'Referer': 'https://www.naukri.com/nlogin/login',
-        },
-        body: JSON.stringify({ username: email, password, loginType: 'emailLogin' }),
-      })
-
-      const text = await res.text()
-      console.log(`${L}   → HTTP ${res.status}`)
-      console.log(`${L}   → body (first 400 chars): ${text.slice(0, 400)}`)
-      console.log(`${L}   → content-type: ${res.headers.get('content-type')}`)
-
-      if (text.trim().startsWith('{')) {
-        const data = JSON.parse(text)
-        console.log(`${L}   → parsed keys: ${Object.keys(data).join(', ')}`)
-        const token = data.authToken || data.token || data.access_token || data.data?.authToken
-        const userId = data.userId || data.user_id || data.id || data.data?.userId || data.data?.id
-        console.log(`${L}   → token found: ${!!token} | userId found: ${!!userId}`)
-
-        if (res.ok && token && userId) {
-          console.log(`${L} ✓ Web login SUCCESS`)
-          return { success: true, token, userId: String(userId) }
-        }
-        console.log(`${L}   → web login failed — message: ${data.message || data.error || 'none'}`)
-      } else {
-        console.log(`${L}   → non-JSON response (HTML/redirect), skipping`)
+    // Helper: try one endpoint and return parsed result
+    const tryEndpoint = async (
+      label: string,
+      url: string,
+      headers: Record<string, string>,
+      body: Record<string, unknown>,
+    ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null; raw: string }> => {
+      console.log(`${L} ── ${label} ──`)
+      console.log(`${L}   POST ${url}`)
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(body),
+        })
+        const raw = await res.text()
+        console.log(`${L}   → HTTP ${res.status}`)
+        console.log(`${L}   → body: ${raw.slice(0, 500)}`)
+        const isJson = raw.trim().startsWith('{') || raw.trim().startsWith('[')
+        const data = isJson ? JSON.parse(raw) : null
+        if (data) console.log(`${L}   → keys: ${Object.keys(data).join(', ')}`)
+        return { ok: res.ok, status: res.status, data, raw }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.log(`${L}   → threw: ${msg}`)
+        return { ok: false, status: 0, data: null, raw: msg }
       }
-    } catch (err) {
-      console.log(`${L}   → web attempt threw:`, err)
     }
 
-    // ── Attempt 2: NMA mobile gateway (APK port-login) ──
-    console.log(`${L} ── Attempt 2: NMA mobile gateway ──`)
-    console.log(`${L}   URL: POST ${NMA_BASE}${PATHS.LOGIN}`)
-    try {
-      const res = await fetch(`${NMA_BASE}${PATHS.LOGIN}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'appid': 'applicationservice',
-          'systemid': 'Naukri',
-          'User-Agent': 'NaukriApp/22.3 (Android; arm64-v8a)',
-        },
-        body: JSON.stringify({ username: email, password, loginType: 'emailLogin' }),
-      })
+    // Helper: extract token + userId from various response shapes
+    const extract = (data: Record<string, unknown>) => {
+      const d = (data?.data ?? {}) as Record<string, unknown>
+      const token =
+        (data.authToken as string) || (data.token as string) || (data.access_token as string) ||
+        (d.authToken as string) || (d.token as string)
+      const userId =
+        (data.userId as string) || (data.user_id as string) || (data.id as string) ||
+        (d.userId as string) || (d.id as string) || (data.sub as string)
+      return { token: token || null, userId: userId ? String(userId) : null }
+    }
 
-      const text = await res.text()
-      console.log(`${L}   → HTTP ${res.status}`)
-      console.log(`${L}   → body (first 400 chars): ${text.slice(0, 400)}`)
-      console.log(`${L}   → content-type: ${res.headers.get('content-type')}`)
+    const DESKTOP_HEADERS = {
+      'appid': '105',
+      'clientid': 'd3skt0p',
+      'systemid': '103',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Origin': 'https://www.naukri.com',
+      'Referer': 'https://www.naukri.com/nlogin/login',
+    }
 
-      if (text.trim().startsWith('{')) {
-        const data = JSON.parse(text)
-        console.log(`${L}   → parsed keys: ${Object.keys(data).join(', ')}`)
-
-        const token = data.token || data.authToken || data.access_token || data.data?.token
-        const userId = data.userId || data.user_id || data.id || data.sub || data.data?.userId
-        console.log(`${L}   → token found: ${!!token} | userId found: ${!!userId}`)
-
-        if (res.ok && token && userId) {
-          console.log(`${L} ✓ NMA login SUCCESS`)
-          return { success: true, token, userId: String(userId) }
+    // ── Endpoint 1: v0/login with username field ──
+    {
+      const r = await tryEndpoint(
+        'Attempt 1: v0/login (username field)',
+        `${NAUKRI_BASE}/central-login-services/v0/login`,
+        DESKTOP_HEADERS,
+        { username: email, password, loginType: 'emailLogin' },
+      )
+      if (r.data) {
+        const { token, userId } = extract(r.data)
+        if (r.ok && token && userId) {
+          console.log(`${L} ✓ SUCCESS via attempt 1`)
+          return { success: true, token, userId }
         }
-
-        const errMsg = data.message || data.error || `HTTP ${res.status}`
-        console.log(`${L} ✗ NMA login FAILED: ${errMsg}`)
-        return { success: false, error: errMsg, statusCode: res.status }
       }
+    }
 
-      console.log(`${L} ✗ NMA returned non-JSON (HTTP ${res.status})`)
-      return { success: false, error: `Non-JSON from Naukri API (HTTP ${res.status})`, statusCode: res.status }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.log(`${L} ✗ NMA threw: ${msg}`)
-      return { success: false, error: `Network error: ${msg}` }
+    // ── Endpoint 2: v0/login with username_or_email field (some HAR captures show this) ──
+    {
+      const r = await tryEndpoint(
+        'Attempt 2: v0/login (username_or_email)',
+        `${NAUKRI_BASE}/central-login-services/v0/login`,
+        DESKTOP_HEADERS,
+        { username_or_email: email, password, loginType: 'emailLogin', checksum: '' },
+      )
+      if (r.data) {
+        const { token, userId } = extract(r.data)
+        if (r.ok && token && userId) {
+          console.log(`${L} ✓ SUCCESS via attempt 2`)
+          return { success: true, token, userId }
+        }
+      }
+    }
+
+    // ── Endpoint 3: mynaukri login gateway ──
+    {
+      const r = await tryEndpoint(
+        'Attempt 3: mynaukri.com login',
+        'https://mynaukri.com/central-login-services/v0/login',
+        DESKTOP_HEADERS,
+        { username: email, password, loginType: 'emailLogin' },
+      )
+      if (r.data) {
+        const { token, userId } = extract(r.data)
+        if (r.ok && token && userId) {
+          console.log(`${L} ✓ SUCCESS via attempt 3`)
+          return { success: true, token, userId }
+        }
+      }
+    }
+
+    // ── Endpoint 4: www2 subdomain ──
+    {
+      const r = await tryEndpoint(
+        'Attempt 4: www2 subdomain',
+        'https://www.naukri.com/central-login-services/v0/applogin',
+        DESKTOP_HEADERS,
+        { username: email, password, loginType: 'emailLogin' },
+      )
+      if (r.data) {
+        const { token, userId } = extract(r.data)
+        if (r.ok && token && userId) {
+          console.log(`${L} ✓ SUCCESS via attempt 4`)
+          return { success: true, token, userId }
+        }
+        // Even on failure, log the full error message
+        const errData = r.data as Record<string, unknown>
+        const errMsg = (errData.message as string) || (errData.error as string) || `HTTP ${r.status}`
+        console.log(`${L} ✗ All attempts failed. Last error: ${errMsg}`)
+        return { success: false, error: errMsg, statusCode: r.status }
+      }
+      return { success: false, error: `All Naukri login endpoints returned non-JSON (HTTP ${r.status})`, statusCode: r.status }
     }
   }
 
