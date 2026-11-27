@@ -13,6 +13,7 @@ interface ResumeData {
   phone: string
   linkedin: string
   github: string
+  summary?: string
   education: { institution: string; degree: string; year: string; score: string }[]
   skills: { category: string; items: string }[]
   projects: { title: string; tech: string; bullets: string[] }[]
@@ -69,6 +70,13 @@ function ResumePreview({ data }: { data: ResumeData }) {
             .filter(Boolean).join(' | ')}
         </div>
       </div>
+
+      {/* Summary */}
+      {data.summary && (
+        <Section title="Summary">
+          <div style={{ fontSize: 11, lineHeight: 1.5 }}>{data.summary}</div>
+        </Section>
+      )}
 
       {/* Education */}
       {data.education.some(e => e.institution) && (
@@ -162,6 +170,12 @@ export default function ResumePage() {
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('edit')
   const printRef = useRef<HTMLDivElement>(null)
 
+  // Import modal state
+  const [showImport, setShowImport] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState('')
+
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/')
     if (status === 'authenticated') loadResume()
@@ -192,6 +206,67 @@ export default function ResumePage() {
       setTimeout(() => setSaved(false), 2000)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleImport = async () => {
+    if (!importText.trim() || importText.length < 50) return
+    setImporting(true)
+    setImportError('')
+    try {
+      const res = await fetch('/api/resume/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: importText }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Import failed')
+      if (data.resume) {
+        // Map AI field names → ResumeData interface field names
+        const r = data.resume
+        const mapped: ResumeData = {
+          name: r.name || '',
+          email: r.email || '',
+          phone: r.phone || '',
+          linkedin: r.linkedin || '',
+          github: r.github || '',
+          summary: r.summary || '',
+          education: (r.education || []).map((e: { institution?: string; degree?: string; year?: string; cgpa?: string; score?: string }) => ({
+            institution: e.institution || '',
+            degree: e.degree || '',
+            year: e.year || '',
+            score: e.cgpa || e.score || '',
+          })),
+          skills: (r.skills || []).map((s: { category?: string; items?: string[] | string }) => ({
+            category: s.category || '',
+            items: Array.isArray(s.items) ? s.items.join(', ') : (s.items || ''),
+          })),
+          projects: [
+            // Experience entries converted to projects
+            ...(r.experience || []).map((e: { role?: string; company?: string; duration?: string; points?: string[] }) => ({
+              title: e.role ? `${e.role}${e.company ? ' @ ' + e.company : ''}` : '',
+              tech: e.duration || '',
+              bullets: Array.isArray(e.points) ? e.points : [],
+            })),
+            // Actual projects
+            ...(r.projects || []).map((p: { name?: string; title?: string; tech?: string; points?: string[]; bullets?: string[] }) => ({
+              title: p.name || p.title || '',
+              tech: p.tech || '',
+              bullets: Array.isArray(p.points) ? p.points : (Array.isArray(p.bullets) ? p.bullets : []),
+            })),
+          ],
+          certifications: r.certifications || [],
+          languages: r.languages?.length ? r.languages : ['English'],
+          declaration: true,
+        }
+        setResume(mapped)
+        setShowImport(false)
+        setImportText('')
+      }
+    } catch (e: unknown) {
+      setImportError(e instanceof Error ? e.message : 'AI parsing failed')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -251,6 +326,83 @@ export default function ResumePage() {
   return (
     <>
       <Navbar />
+
+      {/* ── Import Modal ── */}
+      {showImport && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100,
+          background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+        }} onClick={e => e.target === e.currentTarget && setShowImport(false)}>
+          <div style={{
+            background: '#13131f', border: '1px solid #2a2a3a', borderRadius: 14,
+            padding: 28, width: '100%', maxWidth: 600, maxHeight: '90vh', overflow: 'auto',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Import your resume</h2>
+                <p style={{ color: '#9090aa', fontSize: 13, margin: '6px 0 0' }}>
+                  Paste your resume — Word, PDF copy, LinkedIn export, anything. AI will parse and fill all fields.
+                </p>
+              </div>
+              <button onClick={() => setShowImport(false)} style={{
+                background: 'transparent', border: 'none', color: '#6060a0', fontSize: 22,
+                cursor: 'pointer', lineHeight: 1, flexShrink: 0, marginLeft: 16,
+              }}>×</button>
+            </div>
+
+            <textarea
+              rows={16}
+              placeholder={`Paste your full resume here...\n\nAnything works:\n• Copy-paste from Word / Google Docs\n• Plain text from PDF\n• LinkedIn "Save to PDF" then paste\n• Even messy formatting — AI handles it\n\nExample:\nJohn Doe | john@email.com | +91 9876543210 | linkedin.com/in/johndoe\n\nEducation\nIIT Delhi | B.Tech Computer Science | 2021-2025 | 8.7 CGPA\n\nProjects\nNaukriAuto — Next.js, Supabase, Gemini AI\n• Built AI-powered job application automation for Naukri.com\n• Reduced manual apply time by 95%\n\nSkills\nPython, JavaScript, React, SQL, Machine Learning`}
+              value={importText}
+              onChange={e => setImportText(e.target.value)}
+              style={{
+                width: '100%', boxSizing: 'border-box', borderRadius: 8,
+                background: '#0d0d1a', border: '1px solid #2a2a3a',
+                color: '#e0e0f0', fontSize: 13, padding: 14, resize: 'vertical',
+                lineHeight: 1.6, fontFamily: 'monospace',
+              }}
+            />
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: '#6060a0' }}>
+                {importText.length > 0 ? `${importText.length} chars · ${importText.trim().split(/\s+/).length} words` : 'The more detail, the better the parse'}
+              </div>
+              <div style={{ fontSize: 12, color: '#4A90D9' }}>Powered by Gemini AI</div>
+            </div>
+
+            {importError && (
+              <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.2)', color: '#e74c3c', fontSize: 13 }}>
+                ⚠ {importError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+              <button onClick={() => setShowImport(false)} style={{
+                flex: 1, padding: '10px', borderRadius: 8, border: '1px solid #2a2a3a',
+                background: 'transparent', color: '#9090aa', cursor: 'pointer', fontSize: 14,
+              }}>Cancel</button>
+              <button
+                onClick={handleImport}
+                disabled={importing || importText.length < 50}
+                className="btn-primary"
+                style={{ flex: 2, padding: '10px', fontSize: 14, opacity: importing || importText.length < 50 ? 0.6 : 1 }}
+              >
+                {importing ? (
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                    <div className="spinner" style={{ width: 16, height: 16 }} /> Parsing with AI...
+                  </span>
+                ) : '✨ Parse & Fill All Fields →'}
+              </button>
+            </div>
+
+            <p style={{ fontSize: 11, color: '#4a4a6a', marginTop: 12, textAlign: 'center' }}>
+              Your data never leaves your account · You can edit any field after import
+            </p>
+          </div>
+        </div>
+      )}
+
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '24px 16px' }}>
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
@@ -261,6 +413,12 @@ export default function ResumePage() {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => setShowImport(true)} style={{
+              padding: '8px 16px', borderRadius: 8, border: '1px solid rgba(74,144,217,0.4)',
+              background: 'rgba(74,144,217,0.08)', color: '#4A90D9', fontSize: 13, cursor: 'pointer', fontWeight: 600,
+            }}>
+              ⬇ Import Resume
+            </button>
             <button onClick={handlePrint} style={{
               padding: '8px 16px', borderRadius: 8, border: '1px solid #2a2a3a',
               background: 'transparent', color: '#9090aa', fontSize: 13, cursor: 'pointer',
