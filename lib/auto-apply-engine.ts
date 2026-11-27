@@ -11,6 +11,7 @@
  */
 
 import { NaukriClient, NaukriJob } from './naukri-client'
+import { NaukriWebClient, WebJob } from './naukri-web-client'
 import { scoreMatch, tailorResume } from './resume-ai'
 import { supabaseAdmin, User } from './supabase'
 import { decrypt } from './encryption'
@@ -62,7 +63,11 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
     return result
   }
 
-  if (!user.naukri_token || !user.naukri_user_id) {
+  // Support both cookie auth (web) and token auth (mobile APK)
+  const hasWebAuth = !!user.naukri_cookies_enc
+  const hasMobileAuth = !!(user.naukri_token && user.naukri_user_id)
+
+  if (!hasWebAuth && !hasMobileAuth) {
     result.errors.push('Naukri not connected')
     result.duration = Date.now() - startTime
     return result
@@ -87,43 +92,48 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
     status: 'running',
   }).select().single()
 
-  // 2. Decrypt Naukri token and init client
+  // 2a. Web cookie auth (preferred — user logged in via Google)
+  if (hasWebAuth) {
+    let cookieStr: string
+    try {
+      cookieStr = decrypt(user.naukri_cookies_enc!)
+    } catch {
+      result.errors.push('Failed to decrypt Naukri cookies')
+      result.duration = Date.now() - startTime
+      return result
+    }
+
+    const webClient = new NaukriWebClient(cookieStr)
+    const cookiesValid = await webClient.isValid()
+
+    if (!cookiesValid) {
+      result.errors.push('Naukri session expired — please reconnect from the dashboard and paste fresh cookies')
+      if (syncLog) {
+        await supabaseAdmin.from('sync_logs').update({ status: 'error', error_message: result.errors.join(', '), ended_at: new Date().toISOString() }).eq('id', syncLog.id)
+      }
+      result.duration = Date.now() - startTime
+      return result
+    }
+
+    return await _runWebApplyLoop(webClient, user, result, syncLog?.id, startTime)
+  }
+
+  // 2b. Mobile token auth (legacy fallback)
   let token: string
   try {
-    token = decrypt(user.naukri_token)
+    token = decrypt(user.naukri_token!)
   } catch {
     result.errors.push('Failed to decrypt Naukri token')
     result.duration = Date.now() - startTime
     return result
   }
 
-  const client = new NaukriClient(token, user.naukri_user_id)
+  const client = new NaukriClient(token, user.naukri_user_id!)
 
   // 3. Validate token
   const tokenValid = await client.isTokenValid()
   if (!tokenValid) {
-    // Try to re-login if credentials stored
-    if (user.naukri_email && user.naukri_password_enc) {
-      try {
-        const password = decrypt(user.naukri_password_enc)
-        const loginResult = await NaukriClient.login(user.naukri_email, password)
-        if (loginResult.success && loginResult.token) {
-          // Update token in DB
-          const { encrypt } = await import('./encryption')
-          await supabaseAdmin.from('users').update({
-            naukri_token: encrypt(loginResult.token),
-            naukri_token_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          }).eq('id', userId)
-          // Reinit client
-          const freshClient = new NaukriClient(loginResult.token, user.naukri_user_id)
-          return await _runApplyLoop(freshClient, user, result, syncLog?.id, startTime)
-        }
-      } catch {
-        result.errors.push('Token expired, re-login failed')
-      }
-    } else {
-      result.errors.push('Naukri session expired — please reconnect')
-    }
+    result.errors.push('Naukri session expired — please reconnect from the dashboard')
     if (syncLog) {
       await supabaseAdmin.from('sync_logs').update({ status: 'error', error_message: result.errors.join(', '), ended_at: new Date().toISOString() }).eq('id', syncLog.id)
     }
@@ -253,11 +263,12 @@ async function _runApplyLoop(
     let tailored
     try {
       tailored = await tailorResume({
-        baseResume: user.base_resume_text!,
+        resumeText: user.base_resume_text!,
         jobTitle: job.title,
         companyName: job.companyName,
         jobDescription: jdText,
-        candidateSkills: prefs.skills,
+        matchedSkills: prefs.skills || [],
+        missingSkills: matchAnalysis.missingSkills || [],
       })
 
       await supabaseAdmin.from('apply_queue')
@@ -329,6 +340,212 @@ async function _runApplyLoop(
   }
 
   // Update sync log
+  if (syncLogId) {
+    await supabaseAdmin.from('sync_logs').update({
+      status: 'done',
+      jobs_found: result.jobsSearched,
+      jobs_applied: result.jobsApplied,
+      jobs_skipped: result.jobsSkipped,
+      ended_at: new Date().toISOString(),
+    }).eq('id', syncLogId)
+  }
+
+  result.duration = Date.now() - startTime
+  return result
+}
+
+/**
+ * Web cookie-based apply loop (for users who login via Google on naukri.com)
+ * Same flow as _runApplyLoop but uses NaukriWebClient instead
+ */
+async function _runWebApplyLoop(
+  client: NaukriWebClient,
+  user: User,
+  result: EngineResult,
+  syncLogId: string | undefined,
+  startTime: number
+): Promise<EngineResult> {
+  const prefs = user.preferences
+  const minScore = user.min_match_score || 65
+  const maxApplies = Math.min(user.auto_apply_limit_per_day || 10, MAX_APPLIES_PER_RUN)
+
+  // Check today's apply count
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const { count: todayApplies } = await supabaseAdmin
+    .from('apply_history')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', user.id)
+    .gte('applied_at', today.toISOString())
+
+  const remainingQuota = maxApplies - (todayApplies || 0)
+  if (remainingQuota <= 0) {
+    result.errors.push(`Daily apply limit (${maxApplies}) reached`)
+    result.duration = Date.now() - startTime
+    return result
+  }
+
+  // Build search keywords
+  const keywords = [
+    prefs.targetRole,
+    ...(prefs.skills || []).slice(0, 2),
+  ].filter(Boolean).join(' ')
+
+  const locations = prefs.locations || []
+  const searchLocations = locations.length > 0 ? locations : ['']
+
+  const allJobs: WebJob[] = []
+  for (const location of searchLocations.slice(0, 3)) {
+    const searchResult = await client.searchJobs({
+      keyword: keywords,
+      location,
+      experience: prefs.experience || 0,
+      salaryMin: prefs.minSalary || 0,
+      noOfResults: Math.ceil(MAX_JOBS_PER_RUN / searchLocations.length),
+      wfhMode: prefs.wfhPreference === 'full-wfh',
+    })
+    allJobs.push(...searchResult.jobDetails)
+    result.jobsSearched += searchResult.jobDetails.length
+  }
+
+  // Deduplicate
+  const uniqueJobs = Array.from(
+    new Map(allJobs.map(j => [j.jobId, j])).values()
+  )
+
+  // Filter already-processed
+  const { data: existingJobs } = await supabaseAdmin
+    .from('apply_queue')
+    .select('job_id')
+    .eq('user_id', user.id)
+    .in('job_id', uniqueJobs.map(j => j.jobId))
+
+  const existingIds = new Set((existingJobs || []).map(j => j.job_id))
+  const newJobs = uniqueJobs.filter(j => !existingIds.has(j.jobId))
+
+  let appliedCount = 0
+
+  for (const job of newJobs) {
+    if (appliedCount >= remainingQuota) break
+
+    result.jobsScored++
+
+    const jdText = job.jobDescription ||
+      await client.getJobDescription(job.jobId) ||
+      `${job.title} at ${job.companyName}. ${job.tagsAndSkills || ''}`
+
+    const matchAnalysis = await scoreMatch(
+      user.base_resume_text!,
+      job.title,
+      jdText,
+      prefs.experience || 0
+    )
+
+    const queueEntry = {
+      user_id: user.id,
+      job_id: job.jobId,
+      job_title: job.title,
+      company_name: job.companyName,
+      location: job.location,
+      jd_text: jdText.slice(0, 10000),
+      job_url: job.jdURL || job.staticUrl,
+      match_score: matchAnalysis.score,
+      is_wfh: prefs.wfhPreference === 'full-wfh',
+      status: matchAnalysis.recommend && matchAnalysis.score >= minScore
+        ? 'tailoring'
+        : 'skipped',
+      skip_reason: !matchAnalysis.recommend
+        ? `Score ${matchAnalysis.score}/100 — ${matchAnalysis.reasoning}`
+        : undefined,
+      ai_analysis: matchAnalysis.reasoning,
+    }
+
+    await supabaseAdmin.from('apply_queue').insert(queueEntry)
+
+    if (!matchAnalysis.recommend || matchAnalysis.score < minScore) {
+      result.jobsSkipped++
+      continue
+    }
+
+    result.jobsQueued++
+
+    // Tailor resume
+    let tailored
+    try {
+      tailored = await tailorResume({
+        resumeText: user.base_resume_text!,
+        jobTitle: job.title,
+        companyName: job.companyName,
+        jobDescription: jdText,
+        matchedSkills: prefs.skills || [],
+        missingSkills: matchAnalysis.missingSkills || [],
+      })
+
+      await supabaseAdmin.from('apply_queue')
+        .update({ tailored_resume: tailored, status: 'applying' })
+        .eq('user_id', user.id)
+        .eq('job_id', job.jobId)
+    } catch (err) {
+      result.errors.push(`Tailor failed for ${job.jobId}: ${err}`)
+      await supabaseAdmin.from('apply_queue')
+        .update({ status: 'failed', apply_error: 'Resume tailoring failed' })
+        .eq('user_id', user.id)
+        .eq('job_id', job.jobId)
+      result.jobsFailed++
+      continue
+    }
+
+    await sleep(RATE_LIMIT_MS)
+
+    // Apply using web client with profileId
+    const profileId = user.naukri_user_id || user.naukri_cv_id || ''
+    const applyResult = await client.applyToJob(
+      job.jobId,
+      profileId,
+      tailored.coverNote
+    )
+
+    if (applyResult.alreadyApplied) {
+      await supabaseAdmin.from('apply_queue')
+        .update({ status: 'skipped', skip_reason: 'Already applied' })
+        .eq('user_id', user.id)
+        .eq('job_id', job.jobId)
+      result.jobsSkipped++
+      continue
+    }
+
+    if (applyResult.success) {
+      await supabaseAdmin.from('apply_queue')
+        .update({
+          status: 'done',
+          applied_at: new Date().toISOString(),
+          apply_response: applyResult,
+        })
+        .eq('user_id', user.id)
+        .eq('job_id', job.jobId)
+
+      await supabaseAdmin.from('apply_history').insert({
+        user_id: user.id,
+        job_id: job.jobId,
+        job_title: job.title,
+        company_name: job.companyName,
+        match_score: matchAnalysis.score,
+        status: 'applied',
+        response: applyResult,
+      })
+
+      result.jobsApplied++
+      appliedCount++
+    } else {
+      await supabaseAdmin.from('apply_queue')
+        .update({ status: 'failed', apply_error: applyResult.error })
+        .eq('user_id', user.id)
+        .eq('job_id', job.jobId)
+      result.jobsFailed++
+      result.errors.push(`Apply failed for ${job.title}: ${applyResult.error}`)
+    }
+  }
+
   if (syncLogId) {
     await supabaseAdmin.from('sync_logs').update({
       status: 'done',

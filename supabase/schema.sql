@@ -18,10 +18,11 @@ CREATE TABLE IF NOT EXISTS users (
 
   -- Naukri credentials (encrypted AES-256)
   naukri_email TEXT,
-  naukri_password_enc TEXT,       -- AES-256 encrypted
-  naukri_token TEXT,              -- session token (encrypted)
-  naukri_user_id TEXT,            -- X-Naukri-User-Id header value
-  naukri_cv_id TEXT,              -- uniqueId from resman-aggregator
+  naukri_password_enc TEXT,       -- AES-256 encrypted (legacy, kept for compat)
+  naukri_token TEXT,              -- session token (encrypted, legacy)
+  naukri_cookies_enc TEXT,        -- AES-256 encrypted browser cookies (web auth)
+  naukri_user_id TEXT,            -- profileId / X-Naukri-User-Id
+  naukri_cv_id TEXT,              -- uniqueId / profileId reference
   naukri_profile JSONB,           -- full profile JSON from API
   naukri_connected_at TIMESTAMPTZ,
   naukri_token_expires_at TIMESTAMPTZ,

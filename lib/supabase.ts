@@ -22,6 +22,7 @@ export type User = {
   naukri_email: string | null
   naukri_password_enc: string | null
   naukri_token: string | null
+  naukri_cookies_enc: string | null    // web cookie auth (Google login users)
   naukri_user_id: string | null
   naukri_cv_id: string | null
   naukri_profile: NaukriProfile | null

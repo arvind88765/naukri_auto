@@ -16,6 +16,17 @@ interface Prefs {
   skills: string
 }
 
+interface ConnectedProfile {
+  name: string
+  email: string
+  profileId: string
+  resumeHeadline?: string
+  keySkills?: string
+  experience?: { year: string; month: string }
+  locations?: { id: number; value: string }[]
+  noticePeriod?: { id: number; value: string }
+}
+
 const LOCATIONS = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune', 'Kolkata', 'Ahmedabad', 'Remote']
 const WFH_OPTS = [
   { value: 'remote', label: '🏠 Remote only' },
@@ -29,11 +40,12 @@ export default function OnboardPage() {
   const router = useRouter()
   const [step, setStep] = useState<Step>('naukri')
 
-  // Naukri connect state
-  const [naukriEmail, setNaukriEmail] = useState('')
-  const [naukriPass, setNaukriPass] = useState('')
+  // Cookie connect state
+  const [cookieStr, setCookieStr] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState('')
+  const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
+  const [showCookieGuide, setShowCookieGuide] = useState(false)
 
   // Prefs state
   const [prefs, setPrefs] = useState<Prefs>({
@@ -60,18 +72,31 @@ export default function OnboardPage() {
     }
   }, [status, session, router])
 
+  // Auto-fill prefs from connected profile
+  useEffect(() => {
+    if (!connectedProfile) return
+    setPrefs(p => ({
+      ...p,
+      skills: connectedProfile.keySkills || p.skills,
+      locations: connectedProfile.locations?.map(l => l.value).filter(v =>
+        LOCATIONS.includes(v)
+      ) || p.locations,
+    }))
+  }, [connectedProfile])
+
   const handleNaukriConnect = async () => {
-    if (!naukriEmail || !naukriPass) return
+    if (!cookieStr.trim()) return
     setConnecting(true)
     setConnectError('')
     try {
-      const res = await fetch('/api/naukri/login', {
+      const res = await fetch('/api/naukri/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: naukriEmail, password: naukriPass }),
+        body: JSON.stringify({ cookieStr: cookieStr.trim() }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Connection failed')
+      setConnectedProfile(data.profile)
       await update()
       setStep('prefs')
     } catch (e: unknown) {
@@ -156,10 +181,12 @@ export default function OnboardPage() {
     { id: 'resume', label: 'Resume', num: 3 },
   ]
 
+  const stepIdx = { naukri: 0, prefs: 1, resume: 2 }
+
   return (
     <>
       <Navbar />
-      <main style={{ maxWidth: 560, margin: '0 auto', padding: '48px 24px' }}>
+      <main style={{ maxWidth: 580, margin: '0 auto', padding: '48px 24px' }}>
         {/* Step indicator */}
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 48 }}>
           {steps.map((s, i) => (
@@ -169,12 +196,12 @@ export default function OnboardPage() {
                   width: 32, height: 32, borderRadius: '50%',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 13, fontWeight: 700,
-                  background: step === s.id ? '#4A90D9' : steps.indexOf({ id: step, label: '', num: 0 }) > i ? 'rgba(6,214,160,0.2)' : '#1a1a2e',
-                  color: step === s.id ? '#fff' : '#9090aa',
-                  border: `2px solid ${step === s.id ? '#4A90D9' : '#2a2a3a'}`,
+                  background: step === s.id ? '#4A90D9' : stepIdx[step] > i ? 'rgba(6,214,160,0.2)' : '#1a1a2e',
+                  color: step === s.id ? '#fff' : stepIdx[step] > i ? '#06d6a0' : '#9090aa',
+                  border: `2px solid ${step === s.id ? '#4A90D9' : stepIdx[step] > i ? 'rgba(6,214,160,0.4)' : '#2a2a3a'}`,
                   transition: 'all 0.3s',
                 }}>
-                  {s.num}
+                  {stepIdx[step] > i ? '✓' : s.num}
                 </div>
                 <span style={{ fontSize: 13, color: step === s.id ? '#e0e0f0' : '#6060a0', fontWeight: step === s.id ? 600 : 400 }}>
                   {s.label}
@@ -187,74 +214,127 @@ export default function OnboardPage() {
           ))}
         </div>
 
-        {/* Step 1: Naukri Connect */}
+        {/* ── Step 1: Cookie-based Naukri Connect ── */}
         {step === 'naukri' && (
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connect your Naukri account</h1>
-            <p style={{ color: '#9090aa', marginBottom: 32, lineHeight: 1.6 }}>
-              We use your credentials to fetch your profile and auto-apply on your behalf.
-              Your password is encrypted with AES-256 and never stored in plain text.
+            <p style={{ color: '#9090aa', marginBottom: 24, lineHeight: 1.6 }}>
+              You already use <strong style={{ color: '#c0c0d8' }}>Google to log into Naukri</strong> — so we don't need your password.
+              Just paste your browser session cookies and we're in.
             </p>
 
-            <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 16, marginBottom: 24, fontSize: 13, color: '#4A90D9' }}>
-              🔒 End-to-end encrypted · We never sell your data · You can disconnect anytime
+            <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 24, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>
+              🔒 Cookies are AES-256 encrypted and stored only on your account. Auto-deleted after 30 days.
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
-                  Naukri Email / Mobile
-                </label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="you@email.com"
-                  value={naukriEmail}
-                  onChange={e => setNaukriEmail(e.target.value)}
-                  style={{ width: '100%', boxSizing: 'border-box' }}
-                />
+            {/* How-to Guide */}
+            <button
+              onClick={() => setShowCookieGuide(v => !v)}
+              style={{
+                width: '100%', padding: '12px 16px', borderRadius: 10, fontSize: 14,
+                background: showCookieGuide ? 'rgba(74,144,217,0.1)' : 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(74,144,217,0.3)', color: '#c0c0d8',
+                cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}
+            >
+              <span>📋 How to get your Naukri cookies (30 seconds)</span>
+              <span style={{ fontSize: 18 }}>{showCookieGuide ? '▲' : '▼'}</span>
+            </button>
+
+            {showCookieGuide && (
+              <div style={{
+                marginTop: 2, padding: '16px 20px',
+                background: 'rgba(74,144,217,0.05)', border: '1px solid rgba(74,144,217,0.15)',
+                borderRadius: '0 0 10px 10px', fontSize: 13, lineHeight: 1.8,
+              }}>
+                <div style={{ color: '#06d6a0', fontWeight: 700, marginBottom: 12 }}>Step-by-step (Chrome):</div>
+                <ol style={{ margin: 0, paddingLeft: 20, color: '#c0c0d8' }}>
+                  <li>Open <strong>naukri.com</strong> in Chrome (make sure you&apos;re logged in with Google)</li>
+                  <li>Press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> to open DevTools</li>
+                  <li>Click <strong>Application</strong> tab at the top</li>
+                  <li>In left panel: <strong>Cookies → www.naukri.com</strong></li>
+                  <li>Look for cookies: <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>nauk_at</code>, <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>nkid</code>, <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>_t</code></li>
+                  <li>Or: press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> → <strong>Console</strong> tab → paste this and hit Enter:</li>
+                </ol>
+                <div style={{
+                  marginTop: 10, padding: '10px 14px',
+                  background: '#0a0a1a', border: '1px solid #2a2a3a', borderRadius: 8,
+                  fontFamily: 'monospace', fontSize: 12, color: '#06d6a0',
+                  overflowX: 'auto', cursor: 'text',
+                  userSelect: 'all',
+                }}>
+                  copy(document.cookie)
+                </div>
+                <div style={{ marginTop: 8, color: '#6060a0', fontSize: 12 }}>
+                  This copies all cookies to your clipboard. Then paste below ↓
+                </div>
               </div>
-              <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
-                  Naukri Password
-                </label>
-                <input
-                  type="password"
-                  className="input"
-                  placeholder="••••••••"
-                  value={naukriPass}
-                  onChange={e => setNaukriPass(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleNaukriConnect()}
-                  style={{ width: '100%', boxSizing: 'border-box' }}
-                />
-              </div>
+            )}
+
+            <div style={{ marginTop: 20 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
+                Paste your Naukri cookies here
+              </label>
+              <textarea
+                className="input"
+                rows={4}
+                placeholder={'nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789; ...'}
+                value={cookieStr}
+                onChange={e => setCookieStr(e.target.value)}
+                style={{
+                  width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                  fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+                }}
+              />
+              <p style={{ fontSize: 12, color: '#6060a0', marginTop: 6 }}>
+                Looks like a long string of <code style={{ color: '#4A90D9' }}>name=value; name=value;</code> pairs
+              </p>
             </div>
 
             {connectError && (
-              <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c' }}>
+              <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c', lineHeight: 1.5 }}>
                 ⚠ {connectError}
+                {connectError.includes('expired') && (
+                  <div style={{ marginTop: 6, color: '#ffaa44', fontSize: 12 }}>
+                    Tip: Cookies expire when you log out. Stay logged into naukri.com and copy fresh cookies.
+                  </div>
+                )}
               </div>
             )}
 
             <button
               className="btn-primary"
               onClick={handleNaukriConnect}
-              disabled={connecting || !naukriEmail || !naukriPass}
-              style={{ marginTop: 24, width: '100%', opacity: connecting || !naukriEmail || !naukriPass ? 0.6 : 1 }}
+              disabled={connecting || cookieStr.trim().length < 10}
+              style={{ marginTop: 24, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
             >
               {connecting ? (
                 <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-                  <div className="spinner" style={{ width: 16, height: 16 }} /> Connecting...
+                  <div className="spinner" style={{ width: 16, height: 16 }} /> Verifying cookies...
                 </span>
               ) : 'Connect Naukri →'}
             </button>
+
+            <p style={{ fontSize: 12, color: '#6060a0', marginTop: 16, textAlign: 'center', lineHeight: 1.6 }}>
+              Cookies are only used to call naukri.com API on your behalf.<br />
+              We never send them to any third party.
+            </p>
           </div>
         )}
 
-        {/* Step 2: Preferences */}
+        {/* ── Step 2: Preferences ── */}
         {step === 'prefs' && (
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>What are you looking for?</h1>
+            {connectedProfile && (
+              <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(6,214,160,0.08)', border: '1px solid rgba(6,214,160,0.2)', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 20 }}>✅</span>
+                <div>
+                  <div style={{ color: '#06d6a0', fontWeight: 700 }}>Connected as {connectedProfile.name}</div>
+                  <div style={{ color: '#9090aa', fontSize: 12 }}>{connectedProfile.email} · Profile fetched from Naukri</div>
+                </div>
+              </div>
+            )}
             <p style={{ color: '#9090aa', marginBottom: 32 }}>This helps our AI find and score the right jobs for you.</p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -262,7 +342,7 @@ export default function OnboardPage() {
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
                   Target Role *
                 </label>
-                <input className="input" placeholder="e.g. Senior Software Engineer" value={prefs.targetRole}
+                <input className="input" placeholder="e.g. Software Engineer, Data Analyst" value={prefs.targetRole}
                   onChange={e => setPrefs(p => ({ ...p, targetRole: e.target.value }))}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
@@ -271,7 +351,7 @@ export default function OnboardPage() {
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
                   Years of Experience
                 </label>
-                <input className="input" type="number" placeholder="e.g. 4" value={prefs.experience}
+                <input className="input" type="number" placeholder="e.g. 0 (fresher), 2, 5" value={prefs.experience}
                   onChange={e => setPrefs(p => ({ ...p, experience: e.target.value }))}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
@@ -297,7 +377,7 @@ export default function OnboardPage() {
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
                   Minimum Salary (₹ LPA)
                 </label>
-                <input className="input" type="number" placeholder="e.g. 12" value={prefs.minSalary}
+                <input className="input" type="number" placeholder="e.g. 3, 8, 15" value={prefs.minSalary}
                   onChange={e => setPrefs(p => ({ ...p, minSalary: e.target.value }))}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
@@ -323,9 +403,14 @@ export default function OnboardPage() {
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
                   Key Skills (comma-separated)
                 </label>
-                <input className="input" placeholder="e.g. React, Node.js, PostgreSQL, AWS" value={prefs.skills}
+                <input className="input" placeholder="e.g. Python, Machine Learning, Excel, AWS" value={prefs.skills}
                   onChange={e => setPrefs(p => ({ ...p, skills: e.target.value }))}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
+                {connectedProfile?.keySkills && (
+                  <p style={{ fontSize: 12, color: '#6060a0', marginTop: 6 }}>
+                    Pre-filled from your Naukri profile — edit as needed
+                  </p>
+                )}
               </div>
             </div>
 
@@ -336,18 +421,18 @@ export default function OnboardPage() {
           </div>
         )}
 
-        {/* Step 3: Resume */}
+        {/* ── Step 3: Resume ── */}
         {step === 'resume' && (
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Paste your resume</h1>
             <p style={{ color: '#9090aa', marginBottom: 32, lineHeight: 1.6 }}>
-              Claude AI will tailor this for each job. Plain text works best — copy from your Word/PDF doc.
+              Gemini AI will tailor this for each job. Plain text works best — copy from your Word/PDF doc.
             </p>
 
             <textarea
               className="input"
               rows={14}
-              placeholder="Paste your full resume here...&#10;&#10;Include: work experience, skills, education, achievements, links"
+              placeholder={'Paste your full resume here...\n\nInclude: work experience, skills, education, achievements, links'}
               value={resumeText}
               onChange={e => setResumeText(e.target.value)}
               style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
