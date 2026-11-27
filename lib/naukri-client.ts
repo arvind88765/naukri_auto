@@ -38,7 +38,9 @@ const PATHS = {
   CLICK_TRACK:         '/cloudgateway-ccs/url-shortener-services/v0/track/click-track',
   NOTIFICATION_TMPL:   '/cloudgateway-nc-js/nc-services/v0/template/',
   AIDO_BASE:           '/cloudgateway-naukri360/micro-learning-services/v0/api/v1/',
-  // Job search — standard Naukri web API
+  // Job search — v1 works without nkparam; v3+ requires signed token Akamai can't bypass
+  JOB_SEARCH_V1:       '/jobapi/v1/list',
+  JOB_SEARCH_V2:       '/jobapi/v2/list',
   JOB_SEARCH:          '/jobapi/v2/list',
   // Apply flow — from SDUIApplyRenderActivity + postApplyBottomSheet RE
   JOB_APPLY:           '/apply-aggregator/job-apply/v0/jobs',
@@ -531,6 +533,8 @@ export class NaukriClient {
     page?: number
     wfhMode?: boolean
   }): Promise<JobSearchResult> {
+    const L = '[NaukriClient.searchJobs]'
+
     const qp = new URLSearchParams({
       noOfResults: String(params.noOfResults || 20),
       urlType: 'search_by_keyword',
@@ -541,26 +545,47 @@ export class NaukriClient {
       salary: String(params.salaryMin || 0),
       pPage: String(params.page || 1),
     })
+    if (params.wfhMode) qp.set('wfhType', '2')
 
-    if (params.wfhMode) qp.set('wfhType', '2') // Work from home filter
+    // Try v1 first (works without nkparam), then fall back to v2
+    const endpoints = [
+      `${NAUKRI_BASE}${PATHS.JOB_SEARCH_V1}?${qp.toString()}`,
+      `${NAUKRI_BASE}${PATHS.JOB_SEARCH_V2}?${qp.toString()}`,
+    ]
 
-    try {
-      const res = await fetch(`${NAUKRI_BASE}${PATHS.JOB_SEARCH}?${qp.toString()}`, {
-        headers: {
-          ...this.headers(),
-          'Referer': 'https://www.naukri.com',
-        },
-      })
-      if (!res.ok) return { jobDetails: [], noOfJobs: 0 }
-      const data = await res.json()
-      return {
-        jobDetails: data.jobDetails || data.jobs || [],
-        noOfJobs: data.noOfJobs || data.total || 0,
-        urlWord: data.urlWord,
+    for (const url of endpoints) {
+      try {
+        const shortUrl = url.split('?')[0]
+        console.log(`${L} GET ${shortUrl} | keyword="${params.keyword}" location="${params.location || ''}"`)
+        const res = await fetch(url, {
+          headers: {
+            ...this.headers(),
+            'Referer': 'https://www.naukri.com/jobs-in-india',
+            'Accept': 'application/json, text/plain, */*',
+          },
+        })
+        console.log(`${L}   → HTTP ${res.status}`)
+        if (!res.ok) {
+          const txt = await res.text()
+          console.log(`${L}   → body (err): ${txt.slice(0, 300)}`)
+          continue  // try next endpoint
+        }
+        const data = await res.json()
+        const jobs = data.jobDetails || data.jobs || []
+        const total = data.noOfJobs || data.total || 0
+        console.log(`${L}   → jobs=${jobs.length} noOfJobs=${total} | keys: ${Object.keys(data).join(', ')}`)
+        if (jobs.length > 0 || total >= 0) {
+          return { jobDetails: jobs, noOfJobs: total, urlWord: data.urlWord }
+        }
+        // Got 200 but 0 jobs — log the full response for diagnosis
+        console.log(`${L}   → 200 but 0 jobs, raw: ${JSON.stringify(data).slice(0, 400)}`)
+      } catch (err) {
+        console.log(`${L}   → threw: ${err}`)
       }
-    } catch {
-      return { jobDetails: [], noOfJobs: 0 }
     }
+
+    console.log(`${L} ✗ all search endpoints returned 0 jobs`)
+    return { jobDetails: [], noOfJobs: 0 }
   }
 
   /**
