@@ -125,10 +125,15 @@ export class NaukriClient {
   }
 
   /**
-   * LOGIN — tries Naukri web API (confirmed working), falls back to NMA mobile gateway
+   * LOGIN — tries Naukri web API first, then NMA mobile gateway
    */
   static async login(email: string, password: string): Promise<LoginResult> {
-    // ── Attempt 1: Naukri web login (naukri.com/central-login-services) ──
+    const L = '[NaukriClient.login]'
+
+    // ── Attempt 1: Naukri web login ──
+    console.log(`${L} ── Attempt 1: naukri.com web login ──`)
+    console.log(`${L}   URL: POST https://www.naukri.com/central-login-services/v0/login`)
+    console.log(`${L}   email: ${email}`)
     try {
       const res = await fetch(`${NAUKRI_BASE}/central-login-services/v0/login`, {
         method: 'POST',
@@ -142,35 +147,36 @@ export class NaukriClient {
           'Origin': 'https://www.naukri.com',
           'Referer': 'https://www.naukri.com/nlogin/login',
         },
-        body: JSON.stringify({
-          username: email,
-          password: password,
-          loginType: 'emailLogin',
-        }),
+        body: JSON.stringify({ username: email, password, loginType: 'emailLogin' }),
       })
 
       const text = await res.text()
-      console.log('[NaukriClient.login] web attempt status:', res.status, 'body preview:', text.slice(0, 200))
+      console.log(`${L}   → HTTP ${res.status}`)
+      console.log(`${L}   → body (first 400 chars): ${text.slice(0, 400)}`)
+      console.log(`${L}   → content-type: ${res.headers.get('content-type')}`)
 
-      if (text && text.trim().startsWith('{')) {
+      if (text.trim().startsWith('{')) {
         const data = JSON.parse(text)
+        console.log(`${L}   → parsed keys: ${Object.keys(data).join(', ')}`)
         const token = data.authToken || data.token || data.access_token || data.data?.authToken
         const userId = data.userId || data.user_id || data.id || data.data?.userId || data.data?.id
+        console.log(`${L}   → token found: ${!!token} | userId found: ${!!userId}`)
 
         if (res.ok && token && userId) {
+          console.log(`${L} ✓ Web login SUCCESS`)
           return { success: true, token, userId: String(userId) }
         }
-
-        if (!res.ok) {
-          // Don't return yet — try fallback
-          console.log('[NaukriClient.login] web attempt failed:', data.message || data.error)
-        }
+        console.log(`${L}   → web login failed — message: ${data.message || data.error || 'none'}`)
+      } else {
+        console.log(`${L}   → non-JSON response (HTML/redirect), skipping`)
       }
     } catch (err) {
-      console.log('[NaukriClient.login] web attempt threw:', err)
+      console.log(`${L}   → web attempt threw:`, err)
     }
 
     // ── Attempt 2: NMA mobile gateway (APK port-login) ──
+    console.log(`${L} ── Attempt 2: NMA mobile gateway ──`)
+    console.log(`${L}   URL: POST ${NMA_BASE}${PATHS.LOGIN}`)
     try {
       const res = await fetch(`${NMA_BASE}${PATHS.LOGIN}`, {
         method: 'POST',
@@ -180,42 +186,38 @@ export class NaukriClient {
           'systemid': 'Naukri',
           'User-Agent': 'NaukriApp/22.3 (Android; arm64-v8a)',
         },
-        body: JSON.stringify({
-          username: email,
-          password: password,
-          loginType: 'emailLogin',
-        }),
+        body: JSON.stringify({ username: email, password, loginType: 'emailLogin' }),
       })
 
       const text = await res.text()
-      console.log('[NaukriClient.login] NMA attempt status:', res.status, 'body preview:', text.slice(0, 200))
+      console.log(`${L}   → HTTP ${res.status}`)
+      console.log(`${L}   → body (first 400 chars): ${text.slice(0, 400)}`)
+      console.log(`${L}   → content-type: ${res.headers.get('content-type')}`)
 
-      if (text && text.trim().startsWith('{')) {
+      if (text.trim().startsWith('{')) {
         const data = JSON.parse(text)
+        console.log(`${L}   → parsed keys: ${Object.keys(data).join(', ')}`)
 
-        if (res.ok && (data.token || data.authToken || data.access_token)) {
-          const token = data.token || data.authToken || data.access_token
-          const userId = data.userId || data.user_id || data.id || data.sub
+        const token = data.token || data.authToken || data.access_token || data.data?.token
+        const userId = data.userId || data.user_id || data.id || data.sub || data.data?.userId
+        console.log(`${L}   → token found: ${!!token} | userId found: ${!!userId}`)
+
+        if (res.ok && token && userId) {
+          console.log(`${L} ✓ NMA login SUCCESS`)
           return { success: true, token, userId: String(userId) }
         }
 
-        if (data.data?.token) {
-          return { success: true, token: data.data.token, userId: String(data.data.userId || data.data.id) }
-        }
-
-        return {
-          success: false,
-          error: data.message || data.error || `Login failed (HTTP ${res.status})`,
-          statusCode: res.status,
-        }
+        const errMsg = data.message || data.error || `HTTP ${res.status}`
+        console.log(`${L} ✗ NMA login FAILED: ${errMsg}`)
+        return { success: false, error: errMsg, statusCode: res.status }
       }
 
-      return { success: false, error: `Non-JSON response from Naukri (HTTP ${res.status})`, statusCode: res.status }
+      console.log(`${L} ✗ NMA returned non-JSON (HTTP ${res.status})`)
+      return { success: false, error: `Non-JSON from Naukri API (HTTP ${res.status})`, statusCode: res.status }
     } catch (err) {
-      return {
-        success: false,
-        error: `Network error: ${err instanceof Error ? err.message : 'Unknown'}`,
-      }
+      const msg = err instanceof Error ? err.message : String(err)
+      console.log(`${L} ✗ NMA threw: ${msg}`)
+      return { success: false, error: `Network error: ${msg}` }
     }
   }
 

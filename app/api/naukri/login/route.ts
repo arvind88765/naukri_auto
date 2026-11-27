@@ -1,9 +1,6 @@
 /**
  * POST /api/naukri/login
- * Connects user's Naukri account
- * - Authenticates with Naukri API (port-login from APK RE)
- * - Fetches profile + CV ID
- * - Encrypts and stores credentials in Supabase
+ * Connects user's Naukri account via email+password
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -14,67 +11,90 @@ import { encrypt } from '@/lib/encryption'
 import { supabaseAdmin } from '@/lib/supabase'
 import { z } from 'zod'
 
+const TAG = '[NaukriLogin]'
+
 const LoginSchema = z.object({
   email: z.string().email('Invalid email'),
   password: z.string().min(6, 'Password too short'),
 })
 
 export async function POST(req: NextRequest) {
-  // Auth check — must be logged in with Google first
+  console.log(`\n${TAG} ══════════ POST /api/naukri/login ══════════`)
+
+  // ── 1. Session check ──
   const session = await getServerSession(authOptions)
-  console.log('[NaukriLogin] session:', JSON.stringify({
+  console.log(`${TAG} [1/5] Session:`, JSON.stringify({
     hasSession: !!session,
-    email: session?.user?.email,
-    id: session?.user?.id,
+    email: session?.user?.email ?? 'MISSING',
+    userId: (session?.user as { id?: string })?.id ?? 'MISSING',
   }))
+
   if (!session?.user?.email) {
-    return NextResponse.json({ error: 'Not authenticated', debug: 'session is null — cookie not forwarded or NEXTAUTH_SECRET mismatch' }, { status: 401 })
+    console.error(`${TAG} ✗ No session — user not logged in with Google, or NEXTAUTH_SECRET mismatch`)
+    return NextResponse.json({
+      error: 'Not authenticated',
+      debug: 'getServerSession returned null. Check NEXTAUTH_SECRET in .env.local matches what was used to sign the cookie.',
+    }, { status: 401 })
   }
 
-  // Validate body
-  let body
+  // ── 2. Parse + validate body ──
+  let body: { email: string; password: string }
   try {
     const raw = await req.json()
+    console.log(`${TAG} [2/5] Request body email:`, raw?.email, '| password length:', raw?.password?.length ?? 0)
     body = LoginSchema.parse(raw)
   } catch (err) {
+    console.error(`${TAG} ✗ Body validation failed:`, err)
     return NextResponse.json({ error: 'Invalid request', details: String(err) }, { status: 400 })
   }
 
-  // Get internal user ID
+  // ── 3. Lookup internal DB user ──
+  console.log(`${TAG} [3/5] Looking up Supabase user for email:`, session.user.email)
   const { data: dbUser, error: userErr } = await supabaseAdmin
     .from('users')
     .select('id')
     .eq('email', session.user.email)
     .single()
 
+  console.log(`${TAG}   → dbUser:`, dbUser ? `id=${dbUser.id}` : 'NOT FOUND', '| error:', userErr?.message ?? 'none')
+
   if (userErr || !dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    console.error(`${TAG} ✗ User not found in Supabase. Did signIn callback run correctly?`)
+    return NextResponse.json({ error: 'User not found in DB', debug: userErr?.message }, { status: 404 })
   }
 
-  // Attempt Naukri login
+  // ── 4. Naukri login ──
+  console.log(`${TAG} [4/5] Calling NaukriClient.login for:`, body.email)
   const loginResult = await NaukriClient.login(body.email, body.password)
+  console.log(`${TAG}   → loginResult:`, JSON.stringify({
+    success: loginResult.success,
+    hasToken: !!loginResult.token,
+    hasUserId: !!loginResult.userId,
+    error: loginResult.error ?? 'none',
+    statusCode: loginResult.statusCode ?? 'n/a',
+  }))
 
   if (!loginResult.success || !loginResult.token || !loginResult.userId) {
-    console.log('[NaukriLogin] Naukri auth failed:', loginResult)
+    console.error(`${TAG} ✗ Naukri API login failed:`, loginResult.error)
     return NextResponse.json({
       error: loginResult.error || 'Naukri login failed',
-      hint: 'Check your Naukri email and password',
+      hint: 'Check your Naukri email/password. The account must exist on naukri.com.',
       source: 'naukri_api',
     }, { status: 401 })
   }
 
-  // Fetch profile and CV ID in parallel
+  // ── 5. Fetch profile + store ──
+  console.log(`${TAG} [5/5] Fetching profile for userId:`, loginResult.userId)
   const client = new NaukriClient(loginResult.token, loginResult.userId)
   const [profile, cvId] = await Promise.all([
     client.getProfile(),
     client.getCvId(),
   ])
+  console.log(`${TAG}   → profile name:`, profile?.name ?? 'null', '| cvId:', cvId ?? 'null')
 
-  // Encrypt credentials before storing
   const encryptedPassword = encrypt(body.password)
   const encryptedToken = encrypt(loginResult.token)
 
-  // Update user record in Supabase
   const { error: updateErr } = await supabaseAdmin
     .from('users')
     .update({
@@ -90,9 +110,12 @@ export async function POST(req: NextRequest) {
     .eq('id', dbUser.id)
 
   if (updateErr) {
-    console.error('[NaukriLogin] Update error:', updateErr)
-    return NextResponse.json({ error: 'Failed to save connection' }, { status: 500 })
+    console.error(`${TAG} ✗ Supabase update error:`, updateErr)
+    return NextResponse.json({ error: 'Failed to save connection', debug: updateErr.message }, { status: 500 })
   }
+
+  console.log(`${TAG} ✓ SUCCESS — Naukri connected for user:`, session.user.email)
+  console.log(`${TAG} ════════════════════════════════════════════\n`)
 
   return NextResponse.json({
     success: true,
