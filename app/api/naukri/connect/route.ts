@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth'
 import { NaukriWebClient } from '@/lib/naukri-web-client'
 import { encrypt } from '@/lib/encryption'
 import { supabaseAdmin } from '@/lib/supabase'
@@ -18,7 +19,7 @@ const ConnectSchema = z.object({
 
 export async function POST(req: NextRequest) {
   // Must be logged in with Google first
-  const session = await getServerSession()
+  const session = await getServerSession(authOptions)
   if (!session?.user?.email) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
   }
