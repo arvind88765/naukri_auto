@@ -50,6 +50,9 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
     duration: 0,
   }
 
+  console.log(`[Engine] ══════════════════════════════════════════`)
+  console.log(`[Engine] 🤖 runAutoApplyEngine START | userId=${userId}`)
+
   // 1. Load user
   const { data: user, error: userErr } = await supabaseAdmin
     .from('users')
@@ -58,6 +61,7 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
     .single()
 
   if (userErr || !user) {
+    console.log(`[Engine] ✗ user not found`)
     result.errors.push('User not found')
     result.duration = Date.now() - startTime
     return result
@@ -66,20 +70,24 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
   // Support both cookie auth (web) and token auth (mobile APK)
   const hasWebAuth = !!user.naukri_cookies_enc
   const hasMobileAuth = !!(user.naukri_token && user.naukri_user_id)
+  console.log(`[Engine] 🔑 auth | hasWebAuth=${hasWebAuth} hasTokenAuth=${hasMobileAuth} | autoApplyEnabled=${user.auto_apply_enabled} | hasResume=${!!user.base_resume_text}`)
 
   if (!hasWebAuth && !hasMobileAuth) {
+    console.log(`[Engine] ✗ Naukri not connected — aborting`)
     result.errors.push('Naukri not connected')
     result.duration = Date.now() - startTime
     return result
   }
 
   if (!user.base_resume_text) {
+    console.log(`[Engine] ✗ no resume uploaded — aborting`)
     result.errors.push('No resume uploaded')
     result.duration = Date.now() - startTime
     return result
   }
 
   if (!user.auto_apply_enabled) {
+    console.log(`[Engine] ✗ auto-apply disabled — aborting`)
     result.errors.push('Auto-apply disabled')
     result.duration = Date.now() - startTime
     return result
@@ -160,6 +168,8 @@ async function _runApplyLoop(
   const minScore = user.min_match_score || 65
   const maxApplies = Math.min(user.auto_apply_limit_per_day || 10, MAX_APPLIES_PER_RUN)
 
+  console.log(`[Engine] 🚀 _runApplyLoop | userId=${user.id} | targetRole="${prefs?.targetRole}" | skills=${JSON.stringify(prefs?.skills?.slice(0, 3))} | minScore=${minScore} | maxApplies=${maxApplies}`)
+
   // Check today's apply count
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -170,6 +180,7 @@ async function _runApplyLoop(
     .gte('applied_at', today.toISOString())
 
   const remainingQuota = maxApplies - (todayApplies || 0)
+  console.log(`[Engine] 📊 quota | maxApplies=${maxApplies} | todayApplied=${todayApplies ?? 0} | remaining=${remainingQuota} | minScore=${minScore}`)
   if (remainingQuota <= 0) {
     result.errors.push(`Daily apply limit (${maxApplies}) reached`)
     result.duration = Date.now() - startTime
@@ -185,8 +196,11 @@ async function _runApplyLoop(
   const locations = prefs.locations || []
   const searchLocations = locations.length > 0 ? locations : ['']
 
+  console.log(`[Engine] 🔍 search | keywords="${keywords}" | locations=${JSON.stringify(searchLocations)} | experience=${prefs.experience ?? 0} | wfh=${prefs.wfhPreference === 'full-wfh'}`)
+
   const allJobs: NaukriJob[] = []
   for (const location of searchLocations.slice(0, 3)) {
+    console.log(`[Engine]   → searchJobs(keyword="${keywords}", location="${location}")`)
     const searchResult = await client.searchJobs({
       keyword: keywords,
       location,
@@ -195,14 +209,18 @@ async function _runApplyLoop(
       noOfResults: Math.ceil(MAX_JOBS_PER_RUN / searchLocations.length),
       wfhMode: prefs.wfhPreference === 'full-wfh',
     })
+    console.log(`[Engine]   ← got ${searchResult.jobDetails.length} jobs for location="${location}"`)
     allJobs.push(...searchResult.jobDetails)
     result.jobsSearched += searchResult.jobDetails.length
   }
+
+  console.log(`[Engine] 📋 total raw jobs: ${allJobs.length}`)
 
   // Deduplicate by jobId
   const uniqueJobs = Array.from(
     new Map(allJobs.map(j => [j.jobId, j])).values()
   )
+  console.log(`[Engine] 🔁 unique jobs after dedup: ${uniqueJobs.length}`)
 
   // 5. Filter out already-applied or queued jobs
   const { data: existingJobs } = await supabaseAdmin
@@ -213,14 +231,19 @@ async function _runApplyLoop(
 
   const existingIds = new Set((existingJobs || []).map(j => j.job_id))
   const newJobs = uniqueJobs.filter(j => !existingIds.has(j.jobId))
+  console.log(`[Engine] ✨ new jobs (not in queue yet): ${newJobs.length} | already queued: ${existingIds.size}`)
 
   // 6. Score + queue jobs
   let appliedCount = 0
+  if (newJobs.length === 0) {
+    console.log(`[Engine] ⚠️ 0 new jobs to score — engine will return early. All found jobs already in queue.`)
+  }
 
   for (const job of newJobs) {
     if (appliedCount >= remainingQuota) break
 
     result.jobsScored++
+    console.log(`[Engine] 🎯 scoring job ${result.jobsScored}/${newJobs.length}: "${job.title}" @ ${job.companyName} (${job.jobId})`)
 
     // Get full JD if not in search results
     const jdText = job.jobDescription ||
@@ -255,6 +278,7 @@ async function _runApplyLoop(
       ai_analysis: matchAnalysis.reasoning,
     }
 
+    console.log(`[Engine]   → score=${matchAnalysis.score}/100 recommend=${matchAnalysis.recommend} | ${matchAnalysis.score >= minScore ? '✓ QUEUED' : `✗ SKIP (need >=${minScore})`}`)
     await supabaseAdmin.from('apply_queue').insert(queueEntry)
 
     if (!matchAnalysis.recommend || matchAnalysis.score < minScore) {

@@ -142,7 +142,7 @@ export default function DashboardPage() {
           setTriggerResult(`⚠ ${data.error}`)
         }
       } else {
-        setTriggerResult(`✓ Engine started — found ${data.result?.jobsFound ?? 0} jobs, applied to ${data.result?.applied ?? 0}`)
+        setTriggerResult(`✓ Engine ran — searched ${data.result?.jobsSearched ?? 0} jobs, queued ${data.result?.jobsQueued ?? 0}, applied ${data.result?.jobsApplied ?? 0}, skipped ${data.result?.jobsSkipped ?? 0}${data.result?.errors?.length ? ` | ⚠ ${data.result.errors[0]}` : ''}`)
         setTimeout(fetchData, 3000)
       }
     } finally {

@@ -143,7 +143,11 @@ export class NaukriClient {
       'Authorization': `Bearer ${this.token}`,
       'X-Naukri-User-Id': this.userId,
       'Cookie': `nauk_at=${this.token}`,
-      'Content-Type': 'application/json',
+      // NOTE: Content-Type is intentionally OMITTED from GET headers.
+      // Sending Content-Type: application/json on a GET request causes Naukri's
+      // profile endpoint (/users/self) to return HTTP 400. The cvId endpoint
+      // (/uniqueId) is more lenient but profile is strict. Only add it via
+      // extra{} when making a POST/PUT request.
       'appid': '105',
       'clientid': 'd3skt0p',
       'systemid': 'jobseeker',
@@ -152,6 +156,15 @@ export class NaukriClient {
       'Accept': 'application/json, text/plain, */*',
       'Origin': 'https://www.naukri.com',
       'Referer': 'https://www.naukri.com/',
+      ...extra,
+    }
+  }
+
+  /** POST/PUT variant — adds Content-Type: application/json */
+  private postHeaders(extra?: Record<string, string>): HeadersInit {
+    return {
+      ...this.headers(),
+      'Content-Type': 'application/json',
       ...extra,
     }
   }
@@ -586,7 +599,7 @@ export class NaukriClient {
         `${NMA_BASE}${PATHS.JOB_APPLY}/${jobId}/apply`,
         {
           method: 'POST',
-          headers: this.headers(),
+          headers: this.postHeaders(),
           body: JSON.stringify(body),
         }
       )
