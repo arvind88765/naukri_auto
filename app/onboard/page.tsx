@@ -41,18 +41,12 @@ export default function OnboardPage() {
   const router = useRouter()
   const [step, setStep] = useState<Step>('naukri')
 
-  // Auto-connect state
-  const [autoConnecting, setAutoConnecting] = useState(false)
-  const [autoConnectDone, setAutoConnectDone] = useState(false)
-  const [autoConnectError, setAutoConnectError] = useState('')
-  const [needsManualFallback, setNeedsManualFallback] = useState(false)
-  const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
-
-  // Manual cookie fallback state
-  const [cookieStr, setCookieStr] = useState('')
+  // Naukri connect state
+  const [naukriEmail, setNaukriEmail] = useState('')
+  const [naukriPassword, setNaukriPassword] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState('')
-  const [showCookieGuide, setShowCookieGuide] = useState(false)
+  const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
 
   // Prefs state
   const [prefs, setPrefs] = useState<Prefs>({
@@ -75,16 +69,31 @@ export default function OnboardPage() {
         router.push('/dashboard')
       } else if (user?.naukriConnected) {
         setStep('prefs')
-      } else if (step === 'naukri' && !autoConnectDone && !autoConnecting && !needsManualFallback) {
-        // Auto-trigger Naukri connect on mount — zero user interaction needed
-        handleAutoConnect()
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, session?.user?.id])
 
-  const handleAutoConnect = () => {
-    setNeedsManualFallback(true)
+  const handleNaukriConnect = async () => {
+    if (!naukriEmail || !naukriPassword) return
+    setConnecting(true)
+    setConnectError('')
+    try {
+      const res = await fetch('/api/naukri/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: naukriEmail, password: naukriPassword }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || data.hint || 'Login failed')
+      setConnectedProfile(data.profile)
+      await update()
+      setStep('prefs')
+    } catch (e: unknown) {
+      setConnectError(e instanceof Error ? e.message : 'Failed to connect Naukri account')
+    } finally {
+      setConnecting(false)
+    }
   }
 
   // Auto-fill prefs from connected profile
@@ -229,108 +238,71 @@ export default function OnboardPage() {
           ))}
         </div>
 
-        {/* ── Step 1: Auto Naukri Connect ── */}
+        {/* ── Step 1: Naukri Login ── */}
         {step === 'naukri' && (
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connect your Naukri account</h1>
             <p style={{ color: '#9090aa', marginBottom: 24, lineHeight: 1.6 }}>
-              You log into Naukri with Google — no password needed. Just grab your session in one console command.
+              Enter your Naukri credentials. We use these to fetch your profile and auto-apply on your behalf.
             </p>
 
-            {/* Cookie connect — primary flow */}
-            {needsManualFallback && (
+            <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 24, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>
+              🔒 End-to-end encrypted · We never sell your data · You can disconnect anytime
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div>
-                {/* One-command guide — always open */}
-                <div style={{
-                  padding: '20px', background: 'rgba(6,214,160,0.06)',
-                  border: '1px solid rgba(6,214,160,0.2)', borderRadius: 12, marginBottom: 20,
-                }}>
-                  <div style={{ color: '#06d6a0', fontWeight: 700, fontSize: 14, marginBottom: 14 }}>
-                    ⚡ 3 steps, 10 seconds
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {[
-                      { n: 1, text: 'Open a new tab → go to', link: 'https://www.naukri.com', linkText: 'naukri.com' },
-                      { n: 2, text: 'Press F12 → click Console tab', link: null, linkText: null },
-                      { n: 3, text: 'Paste this command and press Enter:', link: null, linkText: null },
-                    ].map(s => (
-                      <div key={s.n} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                        <div style={{
-                          minWidth: 24, height: 24, borderRadius: '50%',
-                          background: 'rgba(6,214,160,0.15)', border: '1px solid rgba(6,214,160,0.3)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 11, fontWeight: 700, color: '#06d6a0',
-                        }}>{s.n}</div>
-                        <div style={{ fontSize: 13, color: '#c0c0d8', paddingTop: 3 }}>
-                          {s.text}{' '}
-                          {s.link && <a href={s.link} target="_blank" rel="noopener noreferrer" style={{ color: '#4A90D9' }}>{s.linkText}</a>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
+                  Naukri Email / Mobile
+                </label>
+                <input
+                  className="input"
+                  type="email"
+                  placeholder="you@email.com"
+                  value={naukriEmail}
+                  onChange={e => setNaukriEmail(e.target.value)}
+                  style={{ width: '100%', boxSizing: 'border-box' }}
+                />
+              </div>
 
-                  {/* The command — click to copy */}
-                  <div
-                    onClick={() => {
-                      navigator.clipboard.writeText('copy(document.cookie)')
-                    }}
-                    style={{
-                      marginTop: 14, padding: '12px 16px',
-                      background: '#0a0a1a', border: '1px solid rgba(6,214,160,0.3)', borderRadius: 8,
-                      fontFamily: 'monospace', fontSize: 14, color: '#06d6a0',
-                      cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      userSelect: 'all',
-                    }}
-                  >
-                    <span>copy(document.cookie)</span>
-                    <span style={{ fontSize: 11, color: '#06d6a0', opacity: 0.7, fontFamily: 'sans-serif' }}>click to copy</span>
-                  </div>
-                  <div style={{ marginTop: 10, fontSize: 12, color: '#6060a0', lineHeight: 1.5 }}>
-                    This copies your Naukri session to clipboard. Then paste it in the box below and hit Connect.
-                  </div>
-                </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
+                  Naukri Password
+                </label>
+                <input
+                  className="input"
+                  type="password"
+                  placeholder="••••••••"
+                  value={naukriPassword}
+                  onChange={e => setNaukriPassword(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleNaukriConnect()}
+                  style={{ width: '100%', boxSizing: 'border-box' }}
+                />
+              </div>
+            </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
-                    Paste cookies here
-                  </label>
-                  <textarea
-                    className="input"
-                    rows={3}
-                    placeholder="nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789..."
-                    value={cookieStr}
-                    onChange={e => setCookieStr(e.target.value)}
-                    style={{
-                      width: '100%', boxSizing: 'border-box', resize: 'none',
-                      fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5,
-                    }}
-                  />
-                </div>
-
-                {connectError && (
-                  <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c' }}>
-                    ⚠ {connectError}
-                  </div>
-                )}
-
-                <button
-                  className="btn-primary"
-                  onClick={handleNaukriConnect}
-                  disabled={connecting || cookieStr.trim().length < 10}
-                  style={{ marginTop: 16, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
-                >
-                  {connecting ? (
-                    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-                      <div className="spinner" style={{ width: 16, height: 16 }} /> Verifying...
-                    </span>
-                  ) : 'Connect Naukri →'}
-                </button>
+            {connectError && (
+              <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c', lineHeight: 1.5 }}>
+                ⚠ {connectError}
               </div>
             )}
 
-            <p style={{ fontSize: 12, color: '#6060a0', marginTop: 24, textAlign: 'center', lineHeight: 1.6 }}>
-              🔒 We only use your credentials to apply to jobs on your behalf.<br />
-              Never shared with third parties.
+            <button
+              className="btn-primary"
+              onClick={handleNaukriConnect}
+              disabled={connecting || !naukriEmail || !naukriPassword}
+              style={{ marginTop: 24, width: '100%', opacity: connecting || !naukriEmail || !naukriPassword ? 0.6 : 1 }}
+            >
+              {connecting ? (
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                  <div className="spinner" style={{ width: 16, height: 16 }} /> Connecting...
+                </span>
+              ) : 'Connect Naukri →'}
+            </button>
+
+            <p style={{ fontSize: 12, color: '#6060a0', marginTop: 16, textAlign: 'center', lineHeight: 1.6 }}>
+              Credentials are AES-256 encrypted and only used to apply to jobs on your behalf.<br />
+              Never shared with any third party.
             </p>
           </div>
         )}
