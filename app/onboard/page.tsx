@@ -92,32 +92,57 @@ export default function OnboardPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || data.hint || 'Login failed')
-      setConnectedProfile(data.profile)
+      const profile = data.profile
+      setConnectedProfile(profile)
       await update()
+
       // If reconnecting from expired session, go straight back to dashboard
       if (isReconnect) {
         router.push('/dashboard')
         return
       }
-      setStep('prefs')
+
+      // Auto-extract prefs from Naukri profile and save silently — no form needed
+      // login API returns: currentRole (profileHeadline), experience (number), location (string)
+      const rawRole = profile?.currentRole || profile?.resumeHeadline || ''
+      const autoTargetRole = rawRole.split('|')[0]?.split('-')[0]?.split('/')?.[0]?.trim() || ''
+      const autoSkills = profile?.keySkills || ''
+      // Location from profile is a single string; also check locations array if present
+      const profileLocation = profile?.location || ''
+      const autoLocations: string[] = [
+        ...((profile?.locations || []).map((l: { value: string }) => l.value)),
+        ...(profileLocation ? [profileLocation] : []),
+      ].filter((v: string) => LOCATIONS.includes(v))
+      const autoExperience = typeof profile?.experience === 'number'
+        ? profile.experience
+        : parseFloat(profile?.experience?.year || '0') || 0
+
+      if (autoTargetRole || autoSkills) {
+        // Got enough to auto-save — skip the prefs form
+        try {
+          await fetch('/api/naukri/profile', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              targetRole: autoTargetRole || 'Software Engineer',
+              experience: autoExperience,
+              locations: autoLocations,
+              skills: autoSkills.split(',').map((s: string) => s.trim()).filter(Boolean),
+              wfhPreference: 'any',
+            }),
+          })
+        } catch { /* non-fatal — user can fix on dashboard */ }
+        setStep('resume')
+      } else {
+        // Profile had no headline — show prefs form so user can fill manually
+        setStep('prefs')
+      }
     } catch (e: unknown) {
       setConnectError(e instanceof Error ? e.message : 'Failed to connect Naukri account')
     } finally {
       setConnecting(false)
     }
   }
-
-  // Auto-fill prefs from connected profile
-  useEffect(() => {
-    if (!connectedProfile) return
-    setPrefs(p => ({
-      ...p,
-      skills: connectedProfile.keySkills || p.skills,
-      locations: connectedProfile.locations?.map(l => l.value).filter(v =>
-        LOCATIONS.includes(v)
-      ) || p.locations,
-    }))
-  }, [connectedProfile])
 
   const handleSavePrefs = async () => {
     if (!prefs.targetRole) return

@@ -127,6 +127,11 @@ export async function POST(req: NextRequest) {
       currentRole: profile?.profileHeadline,
       experience: profile?.experience,
       location: profile?.currentLocation,
+      // Extra fields for auto-prefs extraction (skips the prefs form)
+      keySkills: profile?.skills?.join(', ') || '',
+      locations: profile?.currentLocation
+        ? [{ id: 0, value: profile.currentLocation }]
+        : [],
     },
   })
 }
