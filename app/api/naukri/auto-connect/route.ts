@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/app/api/auth/[...nextauth]/route'
 import { supabaseAdmin } from '@/lib/supabase'
-import { encrypt } from '@/lib/crypto'
+import { encrypt } from '@/lib/encryption'
 
 // Naukri's Google Sign-In client_id (found in HAR analysis)
 const NAUKRI_GSI_CLIENT_ID = '495978633425-tvscej95bp780ok4qb58r90gsfeua30d.apps.googleusercontent.com'
