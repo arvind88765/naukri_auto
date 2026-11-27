@@ -2,8 +2,33 @@
 
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Navbar from '@/components/Navbar'
+
+// Naukri's Google GSI client_id — found in HAR analysis
+// Using this client_id lets us get a Google credential that Naukri's backend will accept
+const NAUKRI_CLIENT_ID = '495978633425-tvscej95bp780ok4qb58r90gsfeua30d.apps.googleusercontent.com'
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: {
+            client_id: string
+            callback: (response: { credential: string }) => void
+            auto_select?: boolean
+            cancel_on_tap_outside?: boolean
+            use_fedcm_for_prompt?: boolean
+          }) => void
+          prompt: (notification?: (n: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean; isDismissedMoment: () => boolean }) => void) => void
+          renderButton: (el: HTMLElement, config: Record<string, unknown>) => void
+          disableAutoSelect: () => void
+        }
+      }
+    }
+  }
+}
 
 type Step = 'naukri' | 'prefs' | 'resume'
 
@@ -46,6 +71,8 @@ export default function OnboardPage() {
   const [autoConnectError, setAutoConnectError] = useState('')
   const [needsManualFallback, setNeedsManualFallback] = useState(false)
   const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
+  const gsiScriptLoaded = useRef(false)
+  const gsiButtonRef = useRef<HTMLDivElement>(null)
 
   // Manual cookie fallback state
   const [cookieStr, setCookieStr] = useState('')
@@ -82,25 +109,24 @@ export default function OnboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, session?.user?.id])
 
-  const handleAutoConnect = async () => {
+  // Called once we have a GSI credential from Google (signed for Naukri's client_id)
+  const sendCredentialToNaukri = async (credential: string) => {
     setAutoConnecting(true)
     setAutoConnectError('')
     try {
-      const res = await fetch('/api/naukri/auto-connect', { method: 'POST' })
+      const res = await fetch('/api/naukri/auto-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential }),
+      })
       const data = await res.json()
 
       if (res.ok && data.success) {
         setConnectedProfile(data.profile)
         setAutoConnectDone(true)
         await update()
-        // Small delay so user sees the success state
         setTimeout(() => setStep('prefs'), 1200)
-      } else if (data.needsReauth) {
-        // Google token expired — ask user to re-login
-        setAutoConnectError('Your Google session expired. Please sign out and sign in again.')
-        setAutoConnecting(false)
       } else if (data.fallbackToManual) {
-        // Auto-connect couldn't reach Naukri's Google endpoint — show manual fallback
         setNeedsManualFallback(true)
         setAutoConnecting(false)
       } else {
@@ -108,11 +134,75 @@ export default function OnboardPage() {
         setNeedsManualFallback(true)
         setAutoConnecting(false)
       }
-    } catch (e) {
-      setAutoConnectError('Network error during auto-connect')
+    } catch {
+      setAutoConnectError('Network error')
       setNeedsManualFallback(true)
       setAutoConnecting(false)
     }
+  }
+
+  const handleAutoConnect = () => {
+    setAutoConnecting(true)
+    setAutoConnectError('')
+
+    // Load Google GSI script if not already loaded
+    const initGSI = () => {
+      if (!window.google?.accounts?.id) {
+        setAutoConnectError('Google sign-in unavailable')
+        setNeedsManualFallback(true)
+        setAutoConnecting(false)
+        return
+      }
+
+      window.google.accounts.id.initialize({
+        client_id: NAUKRI_CLIENT_ID,
+        callback: (response) => {
+          // Got a credential signed for Naukri's client_id — send to server
+          sendCredentialToNaukri(response.credential)
+        },
+        auto_select: true,           // silently select already-signed-in Google account
+        cancel_on_tap_outside: false,
+        use_fedcm_for_prompt: false, // use legacy prompt, more reliable
+      })
+
+      // Try silent/auto prompt first
+      window.google.accounts.id.prompt((notification) => {
+        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+          // Silent prompt failed — render visible button as fallback
+          console.log('[GSI] Silent prompt not shown, rendering button')
+          setAutoConnecting(false)
+          if (gsiButtonRef.current) {
+            window.google!.accounts.id.renderButton(gsiButtonRef.current, {
+              theme: 'filled_blue',
+              size: 'large',
+              text: 'continue_with',
+              width: 400,
+            })
+          }
+        }
+      })
+    }
+
+    if (gsiScriptLoaded.current && window.google?.accounts?.id) {
+      initGSI()
+      return
+    }
+
+    // Inject GSI script
+    const script = document.createElement('script')
+    script.src = 'https://accounts.google.com/gsi/client'
+    script.async = true
+    script.defer = true
+    script.onload = () => {
+      gsiScriptLoaded.current = true
+      initGSI()
+    }
+    script.onerror = () => {
+      setAutoConnectError('Failed to load Google sign-in')
+      setNeedsManualFallback(true)
+      setAutoConnecting(false)
+    }
+    document.head.appendChild(script)
   }
 
   // Auto-fill prefs from connected profile
@@ -290,6 +380,19 @@ export default function OnboardPage() {
                       </div>
                     </div>
                   </>
+                )}
+
+                {/* GSI button — shown when silent auto_select fails */}
+                {!autoConnecting && !autoConnectDone && !autoConnectError && (
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 14, color: '#9090aa', marginBottom: 16 }}>
+                      Click to connect your Naukri account with Google
+                    </div>
+                    <div ref={gsiButtonRef} style={{ display: 'flex', justifyContent: 'center' }} />
+                    <div style={{ marginTop: 12, fontSize: 12, color: '#6060a0' }}>
+                      This uses your existing Google login — no password needed
+                    </div>
+                  </div>
                 )}
 
                 {autoConnectDone && (
