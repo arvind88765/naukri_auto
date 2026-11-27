@@ -57,16 +57,18 @@ export const authOptions: NextAuthOptions = {
 
     async session({ session, token }) {
       if (session.user && token.sub) {
-        const { data: user } = await supabaseAdmin
+        const { data: user, error: userErr } = await supabaseAdmin
           .from('users')
-          .select('id, naukri_user_id, naukri_cv_id, onboarding_completed, auto_apply_enabled, naukri_connected_at, naukri_cookies_enc')
+          .select('id, naukri_user_id, naukri_cv_id, onboarding_completed, auto_apply_enabled, naukri_connected_at')
           .eq('google_id', token.sub)
           .single()
+
+        if (userErr) console.error('[Auth] session callback db error:', userErr.message)
 
         if (user) {
           session.user.id = user.id
           session.user.googleId = token.sub
-          session.user.naukriConnected = !!(user.naukri_user_id || user.naukri_cookies_enc)
+          session.user.naukriConnected = !!user.naukri_user_id
           session.user.onboardingCompleted = user.onboarding_completed
           session.user.autoApplyEnabled = user.auto_apply_enabled
         }
