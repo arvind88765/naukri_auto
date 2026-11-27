@@ -12,6 +12,7 @@ declare module 'next-auth' {
       onboardingCompleted?: boolean
       autoApplyEnabled?: boolean
     }
+    googleAccessToken?: string
   }
 
   interface User {
@@ -27,6 +28,7 @@ declare module 'next-auth/jwt' {
   interface JWT {
     id?: string
     googleId?: string
+    googleAccessToken?: string
     naukriConnected?: boolean
     onboardingCompleted?: boolean
     autoApplyEnabled?: boolean

@@ -40,11 +40,17 @@ export default function OnboardPage() {
   const router = useRouter()
   const [step, setStep] = useState<Step>('naukri')
 
-  // Cookie connect state
+  // Auto-connect state
+  const [autoConnecting, setAutoConnecting] = useState(false)
+  const [autoConnectDone, setAutoConnectDone] = useState(false)
+  const [autoConnectError, setAutoConnectError] = useState('')
+  const [needsManualFallback, setNeedsManualFallback] = useState(false)
+  const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
+
+  // Manual cookie fallback state
   const [cookieStr, setCookieStr] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState('')
-  const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
   const [showCookieGuide, setShowCookieGuide] = useState(false)
 
   // Prefs state
@@ -68,9 +74,46 @@ export default function OnboardPage() {
         router.push('/dashboard')
       } else if (user?.naukriConnected) {
         setStep('prefs')
+      } else if (step === 'naukri' && !autoConnectDone && !autoConnecting && !needsManualFallback) {
+        // Auto-trigger Naukri connect on mount — zero user interaction needed
+        handleAutoConnect()
       }
     }
-  }, [status, session, router])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, session?.user?.id])
+
+  const handleAutoConnect = async () => {
+    setAutoConnecting(true)
+    setAutoConnectError('')
+    try {
+      const res = await fetch('/api/naukri/auto-connect', { method: 'POST' })
+      const data = await res.json()
+
+      if (res.ok && data.success) {
+        setConnectedProfile(data.profile)
+        setAutoConnectDone(true)
+        await update()
+        // Small delay so user sees the success state
+        setTimeout(() => setStep('prefs'), 1200)
+      } else if (data.needsReauth) {
+        // Google token expired — ask user to re-login
+        setAutoConnectError('Your Google session expired. Please sign out and sign in again.')
+        setAutoConnecting(false)
+      } else if (data.fallbackToManual) {
+        // Auto-connect couldn't reach Naukri's Google endpoint — show manual fallback
+        setNeedsManualFallback(true)
+        setAutoConnecting(false)
+      } else {
+        setAutoConnectError(data.message || 'Auto-connect failed')
+        setNeedsManualFallback(true)
+        setAutoConnecting(false)
+      }
+    } catch (e) {
+      setAutoConnectError('Network error during auto-connect')
+      setNeedsManualFallback(true)
+      setAutoConnecting(false)
+    }
+  }
 
   // Auto-fill prefs from connected profile
   useEffect(() => {
@@ -214,110 +257,170 @@ export default function OnboardPage() {
           ))}
         </div>
 
-        {/* ── Step 1: Cookie-based Naukri Connect ── */}
+        {/* ── Step 1: Auto Naukri Connect ── */}
         {step === 'naukri' && (
           <div>
-            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connect your Naukri account</h1>
-            <p style={{ color: '#9090aa', marginBottom: 24, lineHeight: 1.6 }}>
-              You already use <strong style={{ color: '#c0c0d8' }}>Google to log into Naukri</strong> — so we don't need your password.
-              Just paste your browser session cookies and we're in.
+            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connecting your Naukri account</h1>
+            <p style={{ color: '#9090aa', marginBottom: 32, lineHeight: 1.6 }}>
+              Since you&apos;re logged in with Google, we can connect your Naukri account automatically.
             </p>
 
-            <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 24, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>
-              🔒 Cookies are AES-256 encrypted and stored only on your account. Auto-deleted after 30 days.
-            </div>
-
-            {/* How-to Guide */}
-            <button
-              onClick={() => setShowCookieGuide(v => !v)}
-              style={{
-                width: '100%', padding: '12px 16px', borderRadius: 10, fontSize: 14,
-                background: showCookieGuide ? 'rgba(74,144,217,0.1)' : 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(74,144,217,0.3)', color: '#c0c0d8',
-                cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              }}
-            >
-              <span>📋 How to get your Naukri cookies (30 seconds)</span>
-              <span style={{ fontSize: 18 }}>{showCookieGuide ? '▲' : '▼'}</span>
-            </button>
-
-            {showCookieGuide && (
+            {/* Auto-connect spinner / success / error */}
+            {!needsManualFallback && (
               <div style={{
-                marginTop: 2, padding: '16px 20px',
-                background: 'rgba(74,144,217,0.05)', border: '1px solid rgba(74,144,217,0.15)',
-                borderRadius: '0 0 10px 10px', fontSize: 13, lineHeight: 1.8,
+                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', padding: '48px 24px', gap: 20,
+                background: autoConnectDone
+                  ? 'rgba(6,214,160,0.06)'
+                  : autoConnectError
+                    ? 'rgba(231,76,60,0.06)'
+                    : 'rgba(74,144,217,0.06)',
+                border: `1px solid ${autoConnectDone ? 'rgba(6,214,160,0.2)' : autoConnectError ? 'rgba(231,76,60,0.2)' : 'rgba(74,144,217,0.15)'}`,
+                borderRadius: 16,
               }}>
-                <div style={{ color: '#06d6a0', fontWeight: 700, marginBottom: 12 }}>Step-by-step (Chrome):</div>
-                <ol style={{ margin: 0, paddingLeft: 20, color: '#c0c0d8' }}>
-                  <li>Open <strong>naukri.com</strong> in Chrome (make sure you&apos;re logged in with Google)</li>
-                  <li>Press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> to open DevTools</li>
-                  <li>Click <strong>Application</strong> tab at the top</li>
-                  <li>In left panel: <strong>Cookies → www.naukri.com</strong></li>
-                  <li>Look for cookies: <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>nauk_at</code>, <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>nkid</code>, <code style={{ color: '#4A90D9', background: 'rgba(74,144,217,0.1)', padding: '1px 6px', borderRadius: 4 }}>_t</code></li>
-                  <li>Or: press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> → <strong>Console</strong> tab → paste this and hit Enter:</li>
-                </ol>
-                <div style={{
-                  marginTop: 10, padding: '10px 14px',
-                  background: '#0a0a1a', border: '1px solid #2a2a3a', borderRadius: 8,
-                  fontFamily: 'monospace', fontSize: 12, color: '#06d6a0',
-                  overflowX: 'auto', cursor: 'text',
-                  userSelect: 'all',
-                }}>
-                  copy(document.cookie)
-                </div>
-                <div style={{ marginTop: 8, color: '#6060a0', fontSize: 12 }}>
-                  This copies all cookies to your clipboard. Then paste below ↓
-                </div>
-              </div>
-            )}
+                {autoConnecting && (
+                  <>
+                    <div className="spinner" style={{ width: 48, height: 48 }} />
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 16, fontWeight: 600, color: '#c0c0d8', marginBottom: 6 }}>
+                        Connecting to Naukri...
+                      </div>
+                      <div style={{ fontSize: 13, color: '#6060a0' }}>
+                        Using your Google account to authenticate
+                      </div>
+                    </div>
+                  </>
+                )}
 
-            <div style={{ marginTop: 20 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
-                Paste your Naukri cookies here
-              </label>
-              <textarea
-                className="input"
-                rows={4}
-                placeholder={'nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789; ...'}
-                value={cookieStr}
-                onChange={e => setCookieStr(e.target.value)}
-                style={{
-                  width: '100%', boxSizing: 'border-box', resize: 'vertical',
-                  fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
-                }}
-              />
-              <p style={{ fontSize: 12, color: '#6060a0', marginTop: 6 }}>
-                Looks like a long string of <code style={{ color: '#4A90D9' }}>name=value; name=value;</code> pairs
-              </p>
-            </div>
+                {autoConnectDone && (
+                  <>
+                    <div style={{ fontSize: 48 }}>✅</div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#06d6a0', marginBottom: 6 }}>
+                        Connected! Welcome, {connectedProfile?.name || session?.user?.name || 'User'}
+                      </div>
+                      <div style={{ fontSize: 13, color: '#6060a0' }}>
+                        {connectedProfile?.email || session?.user?.email} · Moving to next step...
+                      </div>
+                    </div>
+                  </>
+                )}
 
-            {connectError && (
-              <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c', lineHeight: 1.5 }}>
-                ⚠ {connectError}
-                {connectError.includes('expired') && (
-                  <div style={{ marginTop: 6, color: '#ffaa44', fontSize: 12 }}>
-                    Tip: Cookies expire when you log out. Stay logged into naukri.com and copy fresh cookies.
-                  </div>
+                {autoConnectError && !autoConnecting && (
+                  <>
+                    <div style={{ fontSize: 40 }}>⚠️</div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: '#e74c3c', marginBottom: 8 }}>
+                        {autoConnectError}
+                      </div>
+                      <button
+                        className="btn-primary"
+                        onClick={handleAutoConnect}
+                        style={{ fontSize: 13, padding: '8px 20px' }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             )}
 
-            <button
-              className="btn-primary"
-              onClick={handleNaukriConnect}
-              disabled={connecting || cookieStr.trim().length < 10}
-              style={{ marginTop: 24, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
-            >
-              {connecting ? (
-                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-                  <div className="spinner" style={{ width: 16, height: 16 }} /> Verifying cookies...
-                </span>
-              ) : 'Connect Naukri →'}
-            </button>
+            {/* Manual cookie fallback — only shown when auto-connect fails */}
+            {needsManualFallback && (
+              <div>
+                <div style={{
+                  padding: '12px 16px', background: 'rgba(255,170,0,0.08)',
+                  border: '1px solid rgba(255,170,0,0.2)', borderRadius: 10,
+                  fontSize: 13, color: '#ffaa44', marginBottom: 24, lineHeight: 1.5,
+                }}>
+                  ⚡ Auto-connect unavailable right now. Use the manual method below — takes about 30 seconds.
+                </div>
 
-            <p style={{ fontSize: 12, color: '#6060a0', marginTop: 16, textAlign: 'center', lineHeight: 1.6 }}>
-              Cookies are only used to call naukri.com API on your behalf.<br />
-              We never send them to any third party.
+                <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 20, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>
+                  🔒 Cookies are AES-256 encrypted and stored only on your account. Auto-deleted after 30 days.
+                </div>
+
+                <button
+                  onClick={() => setShowCookieGuide(v => !v)}
+                  style={{
+                    width: '100%', padding: '12px 16px', borderRadius: 10, fontSize: 14,
+                    background: showCookieGuide ? 'rgba(74,144,217,0.1)' : 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(74,144,217,0.3)', color: '#c0c0d8',
+                    cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  }}
+                >
+                  <span>📋 How to get your Naukri cookies (30 seconds)</span>
+                  <span style={{ fontSize: 18 }}>{showCookieGuide ? '▲' : '▼'}</span>
+                </button>
+
+                {showCookieGuide && (
+                  <div style={{
+                    marginTop: 2, padding: '16px 20px',
+                    background: 'rgba(74,144,217,0.05)', border: '1px solid rgba(74,144,217,0.15)',
+                    borderRadius: '0 0 10px 10px', fontSize: 13, lineHeight: 1.8,
+                  }}>
+                    <div style={{ color: '#06d6a0', fontWeight: 700, marginBottom: 12 }}>Step-by-step (Chrome):</div>
+                    <ol style={{ margin: 0, paddingLeft: 20, color: '#c0c0d8' }}>
+                      <li>Open <strong>naukri.com</strong> in Chrome (logged in with Google)</li>
+                      <li>Press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> → <strong>Console</strong> tab</li>
+                      <li>Paste this command and hit Enter:</li>
+                    </ol>
+                    <div style={{
+                      marginTop: 10, padding: '10px 14px',
+                      background: '#0a0a1a', border: '1px solid #2a2a3a', borderRadius: 8,
+                      fontFamily: 'monospace', fontSize: 12, color: '#06d6a0',
+                      cursor: 'text', userSelect: 'all',
+                    }}>
+                      copy(document.cookie)
+                    </div>
+                    <div style={{ marginTop: 8, color: '#6060a0', fontSize: 12 }}>
+                      This copies your cookies. Paste them below ↓
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ marginTop: 20 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
+                    Paste your Naukri cookies here
+                  </label>
+                  <textarea
+                    className="input"
+                    rows={4}
+                    placeholder={'nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789; ...'}
+                    value={cookieStr}
+                    onChange={e => setCookieStr(e.target.value)}
+                    style={{
+                      width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                      fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+                    }}
+                  />
+                </div>
+
+                {connectError && (
+                  <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c', lineHeight: 1.5 }}>
+                    ⚠ {connectError}
+                  </div>
+                )}
+
+                <button
+                  className="btn-primary"
+                  onClick={handleNaukriConnect}
+                  disabled={connecting || cookieStr.trim().length < 10}
+                  style={{ marginTop: 20, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
+                >
+                  {connecting ? (
+                    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                      <div className="spinner" style={{ width: 16, height: 16 }} /> Verifying...
+                    </span>
+                  ) : 'Connect Naukri →'}
+                </button>
+              </div>
+            )}
+
+            <p style={{ fontSize: 12, color: '#6060a0', marginTop: 24, textAlign: 'center', lineHeight: 1.6 }}>
+              🔒 We only use your credentials to apply to jobs on your behalf.<br />
+              Never shared with third parties.
             </p>
           </div>
         )}

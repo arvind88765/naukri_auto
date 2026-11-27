@@ -61,23 +61,29 @@ const handler = NextAuth({
         // Attach internal DB user id and onboarding status to session
         const { data: user } = await supabaseAdmin
           .from('users')
-          .select('id, naukri_user_id, naukri_cv_id, onboarding_completed, auto_apply_enabled, naukri_connected_at')
+          .select('id, naukri_user_id, naukri_cv_id, onboarding_completed, auto_apply_enabled, naukri_connected_at, naukri_cookies_enc')
           .eq('google_id', token.sub)
           .single()
 
         if (user) {
           session.user.id = user.id
           session.user.googleId = token.sub
-          session.user.naukriConnected = !!user.naukri_user_id
+          session.user.naukriConnected = !!(user.naukri_user_id || user.naukri_cookies_enc)
           session.user.onboardingCompleted = user.onboarding_completed
           session.user.autoApplyEnabled = user.auto_apply_enabled
         }
+        // Pass google access_token to session so auto-connect API can use it
+        session.googleAccessToken = token.googleAccessToken as string | undefined
       }
       return session
     },
 
-    async jwt({ token, user }) {
+    async jwt({ token, user, account }) {
       if (user) token.id = user.id
+      // Store Google access_token so we can use it for Naukri auto-connect
+      if (account?.access_token) {
+        token.googleAccessToken = account.access_token
+      }
       return token
     },
   },
