@@ -16,6 +16,7 @@ interface ResumeData {
   summary?: string
   education: { institution: string; degree: string; year: string; score: string }[]
   skills: { category: string; items: string }[]
+  experience: { role: string; company: string; duration: string; bullets: string[] }[]
   projects: { title: string; tech: string; bullets: string[] }[]
   certifications: string[]
   languages: string[]
@@ -30,6 +31,7 @@ const EMPTY_RESUME: ResumeData = {
     { category: 'Tools & Frameworks', items: '' },
     { category: 'Other', items: '' },
   ],
+  experience: [],
   projects: [{ title: '', tech: '', bullets: ['', ''] }],
   certifications: [''],
   languages: ['English'],
@@ -38,13 +40,19 @@ const EMPTY_RESUME: ResumeData = {
 
 // ─── LaTeX Preview Component ──────────────────────────────────────────────────
 
-// Strip URL to handle — linkedin.com/in/handle → handle, github.com/user → user
+// Normalize to short display form: https://linkedin.com/in/handle → linkedin.com/in/handle
 function stripHandle(url: string, type: 'linkedin' | 'github'): string {
   if (!url) return ''
-  const clean = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')
-  if (type === 'linkedin') return clean.replace(/^linkedin\.com\/in\//, 'linkedin.com/in/')
-  if (type === 'github') return clean.replace(/^github\.com\//, 'github.com/')
-  return clean
+  // Remove protocol + www
+  let s = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')
+  // If it's just a bare handle (no dots), prefix it
+  if (!s.includes('.')) {
+    return type === 'linkedin' ? `linkedin.com/in/${s}` : `github.com/${s}`
+  }
+  // Already has domain — normalize to expected prefix
+  if (type === 'linkedin' && !s.startsWith('linkedin.com')) s = `linkedin.com/in/${s}`
+  if (type === 'github' && !s.startsWith('github.com')) s = `github.com/${s}`
+  return s
 }
 
 function ResumePreview({ data }: { data: ResumeData }) {
@@ -73,8 +81,7 @@ function ResumePreview({ data }: { data: ResumeData }) {
       color: '#111',
       background: '#fff',
       padding: '28px 36px 24px',
-      width: '210mm',       // true A4 width
-      minWidth: '210mm',
+      width: '794px',       // A4 at 96dpi — zoom on parent handles scaling
       boxSizing: 'border-box',
     }}>
       {/* ── Header ── */}
@@ -105,6 +112,25 @@ function ResumePreview({ data }: { data: ResumeData }) {
                 {e.score && <span style={{ color: '#444' }}> · {e.score}</span>}
               </div>
               <div style={{ color: '#444', flexShrink: 0, marginLeft: 8, fontSize: 10 }}>{e.year}</div>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* ── Experience ── */}
+      {data.experience?.some(e => e.role) && (
+        <Section title="Experience">
+          {data.experience.filter(e => e.role).map((e, i) => (
+            <div key={i} style={{ marginBottom: 7 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontWeight: 700 }}>{e.role}{e.company ? ` — ${e.company}` : ''}</span>
+                {e.duration && <span style={{ color: '#444', fontSize: 9.5, flexShrink: 0, marginLeft: 8 }}>{e.duration}</span>}
+              </div>
+              <ul style={{ margin: '2px 0 0 14px', padding: 0 }}>
+                {e.bullets.filter(Boolean).map((b, j) => (
+                  <li key={j} style={{ marginBottom: 1.5, lineHeight: 1.4 }}>{b}</li>
+                ))}
+              </ul>
             </div>
           ))}
         </Section>
@@ -249,18 +275,17 @@ export default function ResumePage() {
         category: s.category || '',
         items: Array.isArray(s.items) ? s.items.join(', ') : (s.items || ''),
       })),
-      projects: [
-        ...((r.experience as ExpRaw[]) || []).map(e => ({
-          title: e.role ? `${e.role}${e.company ? ' @ ' + e.company : ''}` : '',
-          tech: e.duration || '',
-          bullets: Array.isArray(e.points) ? e.points : [],
-        })),
-        ...((r.projects as ProjRaw[]) || []).map(p => ({
-          title: p.name || p.title || '',
-          tech: p.tech || '',
-          bullets: Array.isArray(p.points) ? p.points : (Array.isArray(p.bullets) ? p.bullets : []),
-        })),
-      ],
+      experience: ((r.experience as ExpRaw[]) || []).map(e => ({
+        role: e.role || '',
+        company: e.company || '',
+        duration: e.duration || '',
+        bullets: Array.isArray(e.points) ? e.points : [],
+      })),
+      projects: ((r.projects as ProjRaw[]) || []).map(p => ({
+        title: p.name || p.title || '',
+        tech: p.tech || '',
+        bullets: Array.isArray(p.points) ? p.points : (Array.isArray(p.bullets) ? p.bullets : []),
+      })),
       certifications: (r.certifications as string[]) || [],
       languages: ((r.languages as string[])?.length) ? (r.languages as string[]) : ['English'],
       declaration: true,
@@ -743,16 +768,16 @@ export default function ResumePage() {
               </button>
             </div>
 
-            {/* zoom shrinks element + layout footprint — no blank space at bottom */}
+            {/* zoom: 480/794 = 0.604 — shrinks A4 to fit 480px column, height auto-fits content */}
             <div style={{
               border: '1px solid #2a2a3a',
               borderRadius: '0 0 8px 8px',
               boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
               background: '#fff',
-              width: 420,
+              width: 480,
               overflow: 'hidden',
             }}>
-              <div ref={printRef} style={{ zoom: 0.529 }}>
+              <div ref={printRef} style={{ zoom: 0.604 }}>
                 <ResumePreview data={resume} />
               </div>
             </div>
