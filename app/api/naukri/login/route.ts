@@ -22,8 +22,13 @@ const LoginSchema = z.object({
 export async function POST(req: NextRequest) {
   // Auth check — must be logged in with Google first
   const session = await getServerSession(authOptions)
+  console.log('[NaukriLogin] session:', JSON.stringify({
+    hasSession: !!session,
+    email: session?.user?.email,
+    id: session?.user?.id,
+  }))
   if (!session?.user?.email) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    return NextResponse.json({ error: 'Not authenticated', debug: 'session is null — cookie not forwarded or NEXTAUTH_SECRET mismatch' }, { status: 401 })
   }
 
   // Validate body
@@ -50,9 +55,11 @@ export async function POST(req: NextRequest) {
   const loginResult = await NaukriClient.login(body.email, body.password)
 
   if (!loginResult.success || !loginResult.token || !loginResult.userId) {
+    console.log('[NaukriLogin] Naukri auth failed:', loginResult)
     return NextResponse.json({
       error: loginResult.error || 'Naukri login failed',
       hint: 'Check your Naukri email and password',
+      source: 'naukri_api',
     }, { status: 401 })
   }
 
