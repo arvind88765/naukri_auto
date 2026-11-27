@@ -181,78 +181,70 @@ export class NaukriClient {
       'Referer': 'https://www.naukri.com/nlogin/login',
     }
 
-    // ── Endpoint 1: v0/login with username field ──
+    // ── Attempt 1: CORRECT nested body — logs revealed loginDetails.username is required ──
+    // Error from attempt 2 said: "loginUsingEmailOrUsername.loginDetails.username must not be empty"
     {
       const r = await tryEndpoint(
-        'Attempt 1: v0/login (username field)',
+        'Attempt 1: nested loginDetails body (correct format from error trace)',
         `${NAUKRI_BASE}/central-login-services/v0/login`,
         DESKTOP_HEADERS,
-        { username: email, password, loginType: 'emailLogin' },
+        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
+        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
           console.log(`${L} ✓ SUCCESS via attempt 1`)
           return { success: true, token, userId }
         }
+        const errData = r.data as Record<string, unknown>
+        const errMsg = (errData.message as string) || `HTTP ${r.status}`
+        console.log(`${L}   → attempt 1 failed: ${errMsg}`)
       }
     }
 
-    // ── Endpoint 2: v0/login with username_or_email field (some HAR captures show this) ──
+    // ── Attempt 2: same nested body, explicit loginType inside loginDetails ──
     {
       const r = await tryEndpoint(
-        'Attempt 2: v0/login (username_or_email)',
+        'Attempt 2: loginDetails with loginType inside',
         `${NAUKRI_BASE}/central-login-services/v0/login`,
         DESKTOP_HEADERS,
-        { username_or_email: email, password, loginType: 'emailLogin', checksum: '' },
+        { loginDetails: { username: email, password, loginType: 'emailLogin' } },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
+        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
           console.log(`${L} ✓ SUCCESS via attempt 2`)
           return { success: true, token, userId }
         }
+        const errData = r.data as Record<string, unknown>
+        console.log(`${L}   → attempt 2 failed: ${(errData.message as string) || `HTTP ${r.status}`}`)
       }
     }
 
-    // ── Endpoint 3: mynaukri login gateway ──
+    // ── Attempt 3: v1 endpoint ──
     {
       const r = await tryEndpoint(
-        'Attempt 3: mynaukri.com login',
-        'https://mynaukri.com/central-login-services/v0/login',
+        'Attempt 3: v1 login endpoint',
+        `${NAUKRI_BASE}/central-login-services/v1/login`,
         DESKTOP_HEADERS,
-        { username: email, password, loginType: 'emailLogin' },
+        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
+        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
           console.log(`${L} ✓ SUCCESS via attempt 3`)
           return { success: true, token, userId }
         }
-      }
-    }
-
-    // ── Endpoint 4: www2 subdomain ──
-    {
-      const r = await tryEndpoint(
-        'Attempt 4: www2 subdomain',
-        'https://www.naukri.com/central-login-services/v0/applogin',
-        DESKTOP_HEADERS,
-        { username: email, password, loginType: 'emailLogin' },
-      )
-      if (r.data) {
-        const { token, userId } = extract(r.data)
-        if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 4`)
-          return { success: true, token, userId }
-        }
-        // Even on failure, log the full error message
         const errData = r.data as Record<string, unknown>
-        const errMsg = (errData.message as string) || (errData.error as string) || `HTTP ${r.status}`
-        console.log(`${L} ✗ All attempts failed. Last error: ${errMsg}`)
+        const errMsg = (errData.message as string) || `HTTP ${r.status}`
+        console.log(`${L}   → attempt 3 failed: ${errMsg}`)
+        // Return the actual Naukri error (e.g. "Invalid credentials") so user sees it
         return { success: false, error: errMsg, statusCode: r.status }
       }
-      return { success: false, error: `All Naukri login endpoints returned non-JSON (HTTP ${r.status})`, statusCode: r.status }
+      return { success: false, error: `Non-JSON from Naukri (HTTP ${r.status})`, statusCode: r.status }
     }
   }
 
