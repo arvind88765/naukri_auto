@@ -38,86 +38,102 @@ const EMPTY_RESUME: ResumeData = {
 
 // ─── LaTeX Preview Component ──────────────────────────────────────────────────
 
-function ResumePreview({ data }: { data: ResumeData }) {
-  const s: React.CSSProperties = {
-    fontFamily: '"Times New Roman", Times, serif',
-    fontSize: 11,
-    lineHeight: 1.4,
-    color: '#000',
-    background: '#fff',
-    padding: '24px 32px',
-    width: '100%',
-    minHeight: 1056, // A4 at 96dpi
-    boxSizing: 'border-box',
-  }
+// Strip URL to handle — linkedin.com/in/handle → handle, github.com/user → user
+function stripHandle(url: string, type: 'linkedin' | 'github'): string {
+  if (!url) return ''
+  const clean = url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')
+  if (type === 'linkedin') return clean.replace(/^linkedin\.com\/in\//, 'linkedin.com/in/')
+  if (type === 'github') return clean.replace(/^github\.com\//, 'github.com/')
+  return clean
+}
 
-  const HR = () => <hr style={{ border: 'none', borderTop: '1px solid #000', margin: '4px 0 6px' }} />
+function ResumePreview({ data }: { data: ResumeData }) {
+  const HR = () => <hr style={{ border: 'none', borderTop: '1.2px solid #111', margin: '3px 0 5px' }} />
+
   const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>{title}</div>
+    <div style={{ marginBottom: 9 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 1 }}>{title}</div>
       <HR />
       {children}
     </div>
   )
 
+  const contactParts = [
+    data.email,
+    data.phone,
+    data.linkedin ? stripHandle(data.linkedin, 'linkedin') : '',
+    data.github ? stripHandle(data.github, 'github') : '',
+  ].filter(Boolean)
+
   return (
-    <div style={s}>
-      {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: 1 }}>{data.name || 'Your Name'}</div>
-        <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>
-          {[data.email, data.phone, data.linkedin && `linkedin.com/in/${data.linkedin}`, data.github && `github.com/${data.github}`]
-            .filter(Boolean).join(' | ')}
+    <div style={{
+      fontFamily: '"Times New Roman", Times, serif',
+      fontSize: 10.5,
+      lineHeight: 1.45,
+      color: '#111',
+      background: '#fff',
+      padding: '28px 36px 24px',
+      width: '210mm',       // true A4 width
+      minWidth: '210mm',
+      boxSizing: 'border-box',
+    }}>
+      {/* ── Header ── */}
+      <div style={{ textAlign: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: 0.5, marginBottom: 3 }}>
+          {data.name || 'Your Name'}
+        </div>
+        <div style={{ fontSize: 9.5, color: '#222', letterSpacing: 0.1 }}>
+          {contactParts.join('  ·  ')}
         </div>
       </div>
 
-      {/* Summary */}
+      {/* ── Summary ── */}
       {data.summary && (
         <Section title="Summary">
-          <div style={{ fontSize: 11, lineHeight: 1.5 }}>{data.summary}</div>
+          <div style={{ fontSize: 10.5, lineHeight: 1.5, textAlign: 'justify' }}>{data.summary}</div>
         </Section>
       )}
 
-      {/* Education */}
+      {/* ── Education ── */}
       {data.education.some(e => e.institution) && (
         <Section title="Education">
           {data.education.filter(e => e.institution).map((e, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 3 }}>
               <div>
                 <span style={{ fontWeight: 700 }}>{e.institution}</span>
-                {e.degree && <span> — {e.degree}</span>}
-                {e.score && <span style={{ color: '#555' }}> · {e.score}</span>}
+                {e.degree && <span style={{ fontStyle: 'italic' }}> · {e.degree}</span>}
+                {e.score && <span style={{ color: '#444' }}> · {e.score}</span>}
               </div>
-              <div style={{ color: '#555', flexShrink: 0 }}>{e.year}</div>
+              <div style={{ color: '#444', flexShrink: 0, marginLeft: 8, fontSize: 10 }}>{e.year}</div>
             </div>
           ))}
         </Section>
       )}
 
-      {/* Skills */}
+      {/* ── Skills ── */}
       {data.skills.some(s => s.items) && (
         <Section title="Technical Skills">
           {data.skills.filter(s => s.items).map((s, i) => (
-            <div key={i} style={{ marginBottom: 3 }}>
+            <div key={i} style={{ marginBottom: 2, lineHeight: 1.4 }}>
               <span style={{ fontWeight: 700 }}>{s.category}: </span>
-              <span>{s.items}</span>
+              <span style={{ color: '#222' }}>{s.items}</span>
             </div>
           ))}
         </Section>
       )}
 
-      {/* Projects */}
+      {/* ── Projects ── */}
       {data.projects.some(p => p.title) && (
         <Section title="Projects">
           {data.projects.filter(p => p.title).map((p, i) => (
-            <div key={i} style={{ marginBottom: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontWeight: 700 }}>{p.title}</span>
-                {p.tech && <span style={{ fontStyle: 'italic', color: '#555', fontSize: 10 }}>{p.tech}</span>}
+            <div key={i} style={{ marginBottom: 7 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontWeight: 700, fontSize: 10.5 }}>{p.title}</span>
+                {p.tech && <span style={{ fontStyle: 'italic', color: '#444', fontSize: 9.5 }}>{p.tech}</span>}
               </div>
-              <ul style={{ margin: '2px 0 0 16px', padding: 0 }}>
+              <ul style={{ margin: '2px 0 0 14px', padding: 0 }}>
                 {p.bullets.filter(Boolean).map((b, j) => (
-                  <li key={j} style={{ marginBottom: 1 }}>{b}</li>
+                  <li key={j} style={{ marginBottom: 1.5, lineHeight: 1.4 }}>{b}</li>
                 ))}
               </ul>
             </div>
@@ -125,28 +141,28 @@ function ResumePreview({ data }: { data: ResumeData }) {
         </Section>
       )}
 
-      {/* Certifications */}
+      {/* ── Certifications ── */}
       {data.certifications.some(Boolean) && (
         <Section title="Certifications">
-          <ul style={{ margin: '0 0 0 16px', padding: 0 }}>
+          <ul style={{ margin: '0 0 0 14px', padding: 0 }}>
             {data.certifications.filter(Boolean).map((c, i) => (
-              <li key={i}>{c}</li>
+              <li key={i} style={{ marginBottom: 1.5 }}>{c}</li>
             ))}
           </ul>
         </Section>
       )}
 
-      {/* Languages */}
+      {/* ── Languages ── */}
       {data.languages.some(Boolean) && (
         <Section title="Languages">
           <div>{data.languages.filter(Boolean).join(', ')}</div>
         </Section>
       )}
 
-      {/* Declaration */}
+      {/* ── Declaration ── */}
       {data.declaration && (
         <Section title="Declaration">
-          <div style={{ fontSize: 10, color: '#333' }}>
+          <div style={{ fontSize: 10, color: '#333', lineHeight: 1.5 }}>
             I hereby declare that the above information is true and correct to the best of my knowledge and belief.
           </div>
         </Section>
@@ -654,22 +670,29 @@ export default function ResumePage() {
           )}
 
           {/* Preview */}
-          <div>
+          <div style={{ position: 'sticky', top: 20 }}>
+            {/* toolbar */}
             <div style={{
-              background: '#fff',
-              borderRadius: 8,
-              overflow: 'hidden',
-              boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
-              position: 'sticky',
-              top: 20,
+              background: '#1a1a2e', padding: '10px 16px', display: 'flex',
+              justifyContent: 'space-between', alignItems: 'center',
+              borderRadius: '8px 8px 0 0', border: '1px solid #2a2a3a', borderBottom: 'none',
             }}>
-              <div style={{ background: '#1a1a2e', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 12, color: '#6060a0' }}>📄 Live Preview — A4</span>
-                <button onClick={handlePrint} style={{ fontSize: 11, color: '#4A90D9', background: 'transparent', border: 'none', cursor: 'pointer' }}>
-                  Export PDF ↗
-                </button>
-              </div>
-              <div ref={printRef} style={{ transform: 'scale(0.72)', transformOrigin: 'top left', width: '139%', height: 760 }}>
+              <span style={{ fontSize: 12, color: '#6060a0' }}>📄 Live Preview — A4</span>
+              <button onClick={handlePrint} style={{ fontSize: 11, color: '#4A90D9', background: 'transparent', border: 'none', cursor: 'pointer' }}>
+                Export PDF ↗
+              </button>
+            </div>
+
+            {/* zoom shrinks element + layout footprint — no blank space at bottom */}
+            <div style={{
+              border: '1px solid #2a2a3a',
+              borderRadius: '0 0 8px 8px',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+              background: '#fff',
+              width: 420,
+              overflow: 'hidden',
+            }}>
+              <div ref={printRef} style={{ zoom: 0.529 }}>
                 <ResumePreview data={resume} />
               </div>
             </div>
