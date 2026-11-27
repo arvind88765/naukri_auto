@@ -42,7 +42,9 @@ export default function OnboardPage() {
   const searchParams = useSearchParams()
   const isReconnect = searchParams.get('reconnect') === '1'
   const isPrefsSetup = searchParams.get('setup') === 'prefs'
-  const [step, setStep] = useState<Step>(isPrefsSetup ? 'prefs' : 'naukri')
+  // isPrefsSetup: start on 'naukri' so the prefs form never flashes — effect will redirect
+  const [step, setStep] = useState<Step>('naukri')
+  const [autoSaving, setAutoSaving] = useState(isPrefsSetup)
 
   // Naukri connect state
   const [naukriEmail, setNaukriEmail] = useState('')
@@ -69,7 +71,8 @@ export default function OnboardPage() {
     if (status === 'authenticated') {
       const user = session?.user as { onboardingCompleted?: boolean; naukriConnected?: boolean } | undefined
       if (isPrefsSetup) {
-        // Auto-extract prefs from stored Naukri profile + save + redirect — no form
+        // Auto-extract prefs from stored Naukri profile + save + redirect — no form shown
+        setAutoSaving(true)
         ;(async () => {
           try {
             const res = await fetch('/api/naukri/profile')
@@ -253,6 +256,21 @@ export default function OnboardPage() {
   ]
 
   const stepIdx = { naukri: 0, prefs: 1, resume: 2 }
+
+  // setup=prefs mode: show a blank loading screen while we auto-save + redirect
+  if (autoSaving) {
+    return (
+      <>
+        <Navbar />
+        <main style={{ maxWidth: 580, margin: '0 auto', padding: '48px 24px', textAlign: 'center' }}>
+          <div style={{ marginTop: 80, color: '#9090aa', fontSize: 16 }}>
+            <div style={{ fontSize: 32, marginBottom: 16 }}>⚙️</div>
+            Setting up your preferences…
+          </div>
+        </main>
+      </>
+    )
+  }
 
   return (
     <>
