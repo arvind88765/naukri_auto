@@ -108,28 +108,6 @@ export default function OnboardPage() {
     }))
   }, [connectedProfile])
 
-  const handleNaukriConnect = async () => {
-    if (!cookieStr.trim()) return
-    setConnecting(true)
-    setConnectError('')
-    try {
-      const res = await fetch('/api/naukri/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cookieStr: cookieStr.trim() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Connection failed')
-      setConnectedProfile(data.profile)
-      await update()
-      setStep('prefs')
-    } catch (e: unknown) {
-      setConnectError(e instanceof Error ? e.message : 'Failed to connect Naukri account')
-    } finally {
-      setConnecting(false)
-    }
-  }
-
   const handleSavePrefs = async () => {
     if (!prefs.targetRole) return
     setSavingPrefs(true)

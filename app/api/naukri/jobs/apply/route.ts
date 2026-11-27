@@ -96,10 +96,13 @@ export async function GET(req: NextRequest) {
     .limit(10)
 
   // Stats breakdown
-  const { data: stats } = await supabaseAdmin.rpc('get_apply_stats', { user_uuid: user.id })
-    .select()
-    .single()
-    .catch(() => ({ data: null }))
+  let stats = null
+  try {
+    const { data: rpcData } = await supabaseAdmin.rpc('get_apply_stats', { user_uuid: user.id })
+    stats = rpcData
+  } catch {
+    stats = null
+  }
 
   // Fallback stats if RPC not available
   const statusCounts: Record<string, number> = {}
