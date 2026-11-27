@@ -124,17 +124,23 @@ export class NaukriClient {
   }
 
   /**
-   * Build auth headers discovered from AuthInterceptor.kt in DEX
+   * Build web API headers — nauk_at token is sent as a cookie (web flow)
+   * Also include Authorization Bearer as fallback for NMA mobile API
    */
   private headers(extra?: Record<string, string>): HeadersInit {
     return {
       'Authorization': `Bearer ${this.token}`,
       'X-Naukri-User-Id': this.userId,
+      'Cookie': `nauk_at=${this.token}`,
       'Content-Type': 'application/json',
-      'appid': 'applicationservice',
-      'systemid': 'Naukri',
-      'User-Agent': 'NaukriApp/22.3 (Android; arm64-v8a)',
-      'Accept': 'application/json',
+      'appid': '105',
+      'clientid': 'd3skt0p',
+      'systemid': 'jobseeker',
+      'x-requested-with': 'XMLHttpRequest',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Origin': 'https://www.naukri.com',
+      'Referer': 'https://www.naukri.com/',
       ...extra,
     }
   }
@@ -357,9 +363,10 @@ export class NaukriClient {
 
   /**
    * GET FULL PROFILE — resman-aggregator-services
+   * nauk_at token is cookie-based, web endpoints need cookie auth
    */
   async getProfile(): Promise<NaukriProfile | null> {
-    // Try multiple profile endpoints — NMA base is dead, use naukri.com
+    const L = '[NaukriClient.getProfile]'
     const endpoints = [
       `${NAUKRI_BASE}${PATHS.USERS_SELF}`,
       `${NAUKRI_BASE}${PATHS.USERS_SELF_V1}`,
@@ -367,17 +374,38 @@ export class NaukriClient {
     ]
     for (const url of endpoints) {
       try {
+        console.log(`${L} GET ${url}`)
         const res = await fetch(url, { headers: this.headers() })
+        console.log(`${L}   → HTTP ${res.status}`)
         if (!res.ok) continue
         const data = await res.json()
+        // Multiple response shapes across API versions
         const profile = data.data || data.profile || data
-        if (profile && (profile.userId || profile.name || profile.email)) {
-          return profile
+        // Normalize field names (web API uses different casing)
+        const name = profile.fullName || profile.name || profile.firstName
+        const email = profile.emailId || profile.email
+        const userId = profile.userId || profile.id || this.userId
+        if (name || email || userId) {
+          console.log(`${L} ✓ got profile: name=${name ?? 'null'} email=${email ?? 'null'}`)
+          return {
+            userId: String(userId || ''),
+            name: name || null,
+            email: email || null,
+            mobile: profile.mobile || profile.mobileNumber || null,
+            profileHeadline: profile.resumeHeadline || profile.headline || profile.profileTitle || null,
+            experience: profile.totalExperience?.year ?? profile.experience ?? null,
+            skills: profile.keySkills?.map((k: { skill?: string; value?: string } | string) =>
+              typeof k === 'string' ? k : k.skill || k.value || ''
+            ).filter(Boolean) || [],
+            currentLocation: profile.currentCity || profile.location || null,
+          }
         }
-      } catch {
+      } catch (err) {
+        console.log(`${L}   → threw: ${err}`)
         continue
       }
     }
+    console.log(`${L} ✗ all endpoints failed`)
     return null
   }
 
@@ -386,21 +414,34 @@ export class NaukriClient {
    * From: resman-aggregator-services/v0/uniqueId
    */
   async getCvId(): Promise<string | null> {
+    const L = '[NaukriClient.getCvId]'
     const endpoints = [
       `${NAUKRI_BASE}${PATHS.UNIQUE_ID}`,
       `${NMA_BASE}${PATHS.UNIQUE_ID}`,
     ]
     for (const url of endpoints) {
       try {
+        console.log(`${L} GET ${url}`)
         const res = await fetch(url, { headers: this.headers() })
-        if (!res.ok) continue
+        console.log(`${L}   → HTTP ${res.status}`)
+        if (!res.ok) {
+          const txt = await res.text()
+          console.log(`${L}   → body: ${txt.slice(0, 200)}`)
+          continue
+        }
         const data = await res.json()
-        const id = data.uniqueId || data.cvId || data.data?.uniqueId
-        if (id) return String(id)
-      } catch {
+        console.log(`${L}   → data keys: ${Object.keys(data).join(', ')}`)
+        const id = data.uniqueId || data.cvId || data.data?.uniqueId || data.data?.cvId
+        if (id) {
+          console.log(`${L} ✓ cvId: ${id}`)
+          return String(id)
+        }
+      } catch (err) {
+        console.log(`${L}   → threw: ${err}`)
         continue
       }
     }
+    console.log(`${L} ✗ cvId not found — apply will fail`)
     return null
   }
 

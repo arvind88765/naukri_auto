@@ -11,6 +11,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { supabaseAdmin } from '@/lib/supabase'
 import { runAutoApplyEngine } from '@/lib/auto-apply-engine'
+import { NaukriClient } from '@/lib/naukri-client'
+import { decrypt } from '@/lib/encryption'
 
 export async function POST() {
   const session = await getServerSession(authOptions)
@@ -26,8 +28,26 @@ export async function POST() {
 
   if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (!user.naukri_user_id) return NextResponse.json({ error: 'Naukri not connected' }, { status: 400 })
-  if (!user.base_resume_text) return NextResponse.json({ error: 'No resume uploaded' }, { status: 400 })
-  if (!user.naukri_cv_id) return NextResponse.json({ error: 'CV ID not found — reconnect Naukri' }, { status: 400 })
+  if (!user.base_resume_text) return NextResponse.json({ error: 'No resume uploaded. Go to /resume to build one.' }, { status: 400 })
+
+  // If cv_id missing, try to fetch it on-the-fly (login may have returned null)
+  if (!user.naukri_cv_id && user.naukri_token) {
+    console.log('[ApplyRoute] naukri_cv_id missing — attempting on-demand fetch')
+    try {
+      const token = decrypt(user.naukri_token)
+      const client = new NaukriClient(token, user.naukri_user_id)
+      const cvId = await client.getCvId()
+      if (cvId) {
+        console.log('[ApplyRoute] fetched cvId on-demand:', cvId)
+        await supabaseAdmin.from('users').update({ naukri_cv_id: cvId }).eq('id', user.id)
+        user.naukri_cv_id = cvId
+      } else {
+        console.log('[ApplyRoute] could not fetch cvId — continuing without it')
+      }
+    } catch (err) {
+      console.error('[ApplyRoute] on-demand cvId fetch failed:', err)
+    }
+  }
 
   // Check if engine already running (last sync < 5 mins ago)
   const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()

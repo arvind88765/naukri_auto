@@ -140,7 +140,8 @@ export default function OnboardPage() {
         body: JSON.stringify({ resumeText }),
       })
       const data = await res.json()
-      setExtracted(data)
+      // API returns { success: true, info: {...} } — extract the info object
+      setExtracted(data.info || data)
     } finally {
       setExtracting(false)
     }
@@ -153,7 +154,8 @@ export default function OnboardPage() {
       await fetch('/api/naukri/profile', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resumeText, onboardingCompleted: true }),
+        // Profile PUT expects 'baseResume' field → saves to base_resume_text column
+        body: JSON.stringify({ baseResume: resumeText, onboardingCompleted: true }),
       })
       await update()
       router.push('/dashboard')
@@ -415,12 +417,25 @@ export default function OnboardPage() {
               <div style={{ marginTop: 16, padding: 16, background: 'rgba(6,214,160,0.05)', border: '1px solid rgba(6,214,160,0.2)', borderRadius: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#06d6a0', marginBottom: 10 }}>✓ AI successfully parsed your resume</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
-                  {Object.entries(extracted as Record<string, unknown>).slice(0, 6).map(([k, v]) => (
-                    <div key={k}>
-                      <span style={{ color: '#6060a0' }}>{k}: </span>
-                      <span style={{ color: '#c0c0d8' }}>{Array.isArray(v) ? (v as string[]).slice(0, 3).join(', ') : String(v)}</span>
-                    </div>
-                  ))}
+                  {Object.entries(extracted as Record<string, unknown>).slice(0, 6).map(([k, v]) => {
+                    // Safe stringify — handle arrays, objects, primitives
+                    let display: string
+                    if (Array.isArray(v)) {
+                      display = (v as unknown[]).slice(0, 3).map(x =>
+                        typeof x === 'object' && x !== null ? (x as Record<string, unknown>).name || (x as Record<string, unknown>).value || JSON.stringify(x) : String(x)
+                      ).join(', ')
+                    } else if (typeof v === 'object' && v !== null) {
+                      display = Object.values(v as Record<string, unknown>).slice(0, 2).join(' · ')
+                    } else {
+                      display = String(v ?? '')
+                    }
+                    return (
+                      <div key={k}>
+                        <span style={{ color: '#6060a0' }}>{k}: </span>
+                        <span style={{ color: '#c0c0d8' }}>{display}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}

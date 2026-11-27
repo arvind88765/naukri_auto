@@ -13,6 +13,7 @@ export default function Navbar() {
   const links = [
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/jobs', label: 'Jobs' },
+    { href: '/resume', label: '📄 Resume' },
   ]
 
   return (

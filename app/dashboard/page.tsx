@@ -20,11 +20,22 @@ interface ProfileData {
       skills?: string[]
       minScore?: number
     }
-    resume_text: string | null
-    auto_apply_enabled: boolean
-    daily_apply_limit: number
+    hasResume?: boolean
+    base_resume_text?: string | null
+    resume_text?: string | null
+    auto_apply_enabled?: boolean
+    autoApplyEnabled?: boolean
+    daily_apply_limit?: number
+    autoApplyLimit?: number
+    dailyLimit?: number
   }
   naukri?: {
+    profile?: {
+      name?: string
+      headline?: string
+      resumeHeadline?: string
+      skills?: string[]
+    }
     name?: string
     headline?: string
     totalExperience?: number
@@ -32,8 +43,11 @@ interface ProfileData {
   }
   stats: {
     totalApplied: number
-    totalQueued: number
-    todayApplied: number
+    totalQueued?: number
+    queuedJobs?: number
+    todayApplied?: number
+    appliedToday?: number
+    dailyLimit?: number
   }
 }
 
@@ -73,7 +87,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState(false)
   const [triggerResult, setTriggerResult] = useState<string | null>(null)
-  const [autoApply, setAutoApply] = useState(false)
+  const [autoApply, setAutoApply] = useState<boolean>(false)
   const [togglingAuto, setTogglingAuto] = useState(false)
 
   const fetchData = useCallback(async () => {
@@ -85,7 +99,7 @@ export default function DashboardPage() {
       if (profileRes.ok) {
         const p = await profileRes.json()
         setProfile(p)
-        setAutoApply(p.user?.auto_apply_enabled ?? false)
+        setAutoApply(p.user?.auto_apply_enabled ?? p.user?.autoApplyEnabled ?? false)
       }
       if (queueRes.ok) setQueue(await queueRes.json())
     } finally {
@@ -150,7 +164,19 @@ export default function DashboardPage() {
 
   const p = profile
   const user = p?.user
-  const stats = p?.stats ?? { totalApplied: 0, totalQueued: 0, todayApplied: 0 }
+  // Normalize stats — API may return appliedToday OR todayApplied
+  const rawStats = p?.stats ?? {}
+  const stats = {
+    totalApplied: rawStats.totalApplied ?? 0,
+    totalQueued: rawStats.queuedJobs ?? rawStats.totalQueued ?? 0,
+    todayApplied: rawStats.appliedToday ?? rawStats.todayApplied ?? 0,
+    dailyLimit: rawStats.dailyLimit ?? user?.autoApplyLimit ?? user?.daily_apply_limit ?? 50,
+  }
+  // Normalize user fields
+  const hasResume = user?.hasResume ?? !!(user?.base_resume_text || user?.resume_text)
+  const dailyLimit = stats.dailyLimit
+  // Normalize naukri profile
+  const naukriProfile = p?.naukri?.profile || (p?.naukri?.name ? p.naukri : null)
   const sb = queue?.statusBreakdown ?? {}
   const recentJobs = [...(queue?.queue ?? []), ...(queue?.history ?? [])].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -199,7 +225,7 @@ export default function DashboardPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginBottom: 32 }}>
           {[
             { label: 'Total Applied', value: stats.totalApplied, color: '#06d6a0', icon: '✓' },
-            { label: 'Today', value: `${stats.todayApplied}/${user?.daily_apply_limit ?? 50}`, color: '#4A90D9', icon: '📅' },
+            { label: 'Today', value: `${stats.todayApplied}/${dailyLimit}`, color: '#4A90D9', icon: '📅' },
             { label: 'In Queue', value: stats.totalQueued, color: '#f0a500', icon: '⏳' },
             { label: 'Failed', value: sb.failed ?? 0, color: '#e74c3c', icon: '✗' },
           ].map(stat => (
@@ -214,29 +240,41 @@ export default function DashboardPage() {
         </div>
 
         {/* Naukri profile card */}
-        {p?.naukri && (
-          <div className="card" style={{ marginBottom: 24, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div style={{ width: 48, height: 48, background: 'rgba(74,144,217,0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>
-              👤
+        <div className="card" style={{ marginBottom: 24, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 48, height: 48, background: 'rgba(74,144,217,0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>
+            👤
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>
+              {naukriProfile?.name ?? user?.name ?? 'Your Profile'}
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>{p.naukri.name ?? user?.name}</div>
-              <div style={{ fontSize: 13, color: '#9090aa', marginTop: 2 }}>{p.naukri.headline}</div>
-              {p.naukri.skills && (
-                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                  {p.naukri.skills.slice(0, 6).map(s => (
-                    <span key={s} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(74,144,217,0.08)', color: '#4A90D9', border: '1px solid rgba(74,144,217,0.2)' }}>
-                      {s}
-                    </span>
-                  ))}
-                </div>
+            <div style={{ fontSize: 13, color: '#9090aa', marginTop: 2 }}>
+              {naukriProfile?.resumeHeadline ?? naukriProfile?.headline ?? user?.preferences?.targetRole ?? ''}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              {hasResume ? (
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(6,214,160,0.08)', color: '#06d6a0', border: '1px solid rgba(6,214,160,0.2)' }}>
+                  ✓ Resume uploaded
+                </span>
+              ) : (
+                <span
+                  onClick={() => router.push('/resume')}
+                  style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(240,165,0,0.08)', color: '#f0a500', border: '1px solid rgba(240,165,0,0.2)', cursor: 'pointer', textDecoration: 'underline' }}
+                >
+                  ⚠ No resume — build one now →
+                </span>
               )}
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div className="badge-success" style={{ fontSize: 12 }}>✓ Naukri Connected</div>
+              {(naukriProfile?.skills || user?.preferences?.skills)?.slice(0, 4).map((s: string) => (
+                <span key={s} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(74,144,217,0.08)', color: '#4A90D9', border: '1px solid rgba(74,144,217,0.2)' }}>
+                  {s}
+                </span>
+              ))}
             </div>
           </div>
-        )}
+          <div style={{ textAlign: 'right' }}>
+            <div className="badge-success" style={{ fontSize: 12 }}>✓ Naukri Connected</div>
+          </div>
+        </div>
 
         {/* Manual trigger */}
         <div className="card" style={{ marginBottom: 32, padding: '20px 24px' }}>
@@ -276,12 +314,12 @@ export default function DashboardPage() {
           <div style={{ marginTop: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6060a0', marginBottom: 6 }}>
               <span>Today's progress</span>
-              <span>{stats.todayApplied} / {user?.daily_apply_limit ?? 50} applications</span>
+              <span>{stats.todayApplied} / {dailyLimit} applications</span>
             </div>
             <div style={{ height: 6, background: '#1a1a2e', borderRadius: 3, overflow: 'hidden' }}>
               <div style={{
                 height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #4A90D9, #06d6a0)',
-                width: `${Math.min(100, (stats.todayApplied / (user?.daily_apply_limit ?? 50)) * 100)}%`,
+                width: `${Math.min(100, (stats.todayApplied / dailyLimit) * 100)}%`,
                 transition: 'width 0.5s',
               }} />
             </div>
