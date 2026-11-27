@@ -2,33 +2,9 @@
 
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Navbar from '@/components/Navbar'
 
-// Naukri's Google GSI client_id — found in HAR analysis
-// Using this client_id lets us get a Google credential that Naukri's backend will accept
-const NAUKRI_CLIENT_ID = '495978633425-tvscej95bp780ok4qb58r90gsfeua30d.apps.googleusercontent.com'
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        id: {
-          initialize: (config: {
-            client_id: string
-            callback: (response: { credential: string }) => void
-            auto_select?: boolean
-            cancel_on_tap_outside?: boolean
-            use_fedcm_for_prompt?: boolean
-          }) => void
-          prompt: (notification?: (n: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean; isDismissedMoment: () => boolean }) => void) => void
-          renderButton: (el: HTMLElement, config: Record<string, unknown>) => void
-          disableAutoSelect: () => void
-        }
-      }
-    }
-  }
-}
 
 type Step = 'naukri' | 'prefs' | 'resume'
 
@@ -71,8 +47,6 @@ export default function OnboardPage() {
   const [autoConnectError, setAutoConnectError] = useState('')
   const [needsManualFallback, setNeedsManualFallback] = useState(false)
   const [connectedProfile, setConnectedProfile] = useState<ConnectedProfile | null>(null)
-  const gsiScriptLoaded = useRef(false)
-  const gsiButtonRef = useRef<HTMLDivElement>(null)
 
   // Manual cookie fallback state
   const [cookieStr, setCookieStr] = useState('')
@@ -109,100 +83,8 @@ export default function OnboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, session?.user?.id])
 
-  // Called once we have a GSI credential from Google (signed for Naukri's client_id)
-  const sendCredentialToNaukri = async (credential: string) => {
-    setAutoConnecting(true)
-    setAutoConnectError('')
-    try {
-      const res = await fetch('/api/naukri/auto-connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credential }),
-      })
-      const data = await res.json()
-
-      if (res.ok && data.success) {
-        setConnectedProfile(data.profile)
-        setAutoConnectDone(true)
-        await update()
-        setTimeout(() => setStep('prefs'), 1200)
-      } else if (data.fallbackToManual) {
-        setNeedsManualFallback(true)
-        setAutoConnecting(false)
-      } else {
-        setAutoConnectError(data.message || 'Auto-connect failed')
-        setNeedsManualFallback(true)
-        setAutoConnecting(false)
-      }
-    } catch {
-      setAutoConnectError('Network error')
-      setNeedsManualFallback(true)
-      setAutoConnecting(false)
-    }
-  }
-
   const handleAutoConnect = () => {
-    setAutoConnecting(true)
-    setAutoConnectError('')
-
-    // Load Google GSI script if not already loaded
-    const initGSI = () => {
-      if (!window.google?.accounts?.id) {
-        setAutoConnectError('Google sign-in unavailable')
-        setNeedsManualFallback(true)
-        setAutoConnecting(false)
-        return
-      }
-
-      window.google.accounts.id.initialize({
-        client_id: NAUKRI_CLIENT_ID,
-        callback: (response) => {
-          // Got a credential signed for Naukri's client_id — send to server
-          sendCredentialToNaukri(response.credential)
-        },
-        auto_select: true,           // silently select already-signed-in Google account
-        cancel_on_tap_outside: false,
-        use_fedcm_for_prompt: false, // use legacy prompt, more reliable
-      })
-
-      // Try silent/auto prompt first
-      window.google.accounts.id.prompt((notification) => {
-        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-          // Silent prompt failed — render visible button as fallback
-          console.log('[GSI] Silent prompt not shown, rendering button')
-          setAutoConnecting(false)
-          if (gsiButtonRef.current) {
-            window.google!.accounts.id.renderButton(gsiButtonRef.current, {
-              theme: 'filled_blue',
-              size: 'large',
-              text: 'continue_with',
-              width: 400,
-            })
-          }
-        }
-      })
-    }
-
-    if (gsiScriptLoaded.current && window.google?.accounts?.id) {
-      initGSI()
-      return
-    }
-
-    // Inject GSI script
-    const script = document.createElement('script')
-    script.src = 'https://accounts.google.com/gsi/client'
-    script.async = true
-    script.defer = true
-    script.onload = () => {
-      gsiScriptLoaded.current = true
-      initGSI()
-    }
-    script.onerror = () => {
-      setAutoConnectError('Failed to load Google sign-in')
-      setNeedsManualFallback(true)
-      setAutoConnecting(false)
-    }
-    document.head.appendChild(script)
+    setNeedsManualFallback(true)
   }
 
   // Auto-fill prefs from connected profile
@@ -350,158 +232,83 @@ export default function OnboardPage() {
         {/* ── Step 1: Auto Naukri Connect ── */}
         {step === 'naukri' && (
           <div>
-            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connecting your Naukri account</h1>
-            <p style={{ color: '#9090aa', marginBottom: 32, lineHeight: 1.6 }}>
-              Since you&apos;re logged in with Google, we can connect your Naukri account automatically.
+            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connect your Naukri account</h1>
+            <p style={{ color: '#9090aa', marginBottom: 24, lineHeight: 1.6 }}>
+              You log into Naukri with Google — no password needed. Just grab your session in one console command.
             </p>
 
-            {/* Auto-connect spinner / success / error */}
-            {!needsManualFallback && (
-              <div style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center',
-                justifyContent: 'center', padding: '48px 24px', gap: 20,
-                background: autoConnectDone
-                  ? 'rgba(6,214,160,0.06)'
-                  : autoConnectError
-                    ? 'rgba(231,76,60,0.06)'
-                    : 'rgba(74,144,217,0.06)',
-                border: `1px solid ${autoConnectDone ? 'rgba(6,214,160,0.2)' : autoConnectError ? 'rgba(231,76,60,0.2)' : 'rgba(74,144,217,0.15)'}`,
-                borderRadius: 16,
-              }}>
-                {autoConnecting && (
-                  <>
-                    <div className="spinner" style={{ width: 48, height: 48 }} />
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 16, fontWeight: 600, color: '#c0c0d8', marginBottom: 6 }}>
-                        Connecting to Naukri...
-                      </div>
-                      <div style={{ fontSize: 13, color: '#6060a0' }}>
-                        Using your Google account to authenticate
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* GSI button — shown when silent auto_select fails */}
-                {!autoConnecting && !autoConnectDone && !autoConnectError && (
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 14, color: '#9090aa', marginBottom: 16 }}>
-                      Click to connect your Naukri account with Google
-                    </div>
-                    <div ref={gsiButtonRef} style={{ display: 'flex', justifyContent: 'center' }} />
-                    <div style={{ marginTop: 12, fontSize: 12, color: '#6060a0' }}>
-                      This uses your existing Google login — no password needed
-                    </div>
-                  </div>
-                )}
-
-                {autoConnectDone && (
-                  <>
-                    <div style={{ fontSize: 48 }}>✅</div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: '#06d6a0', marginBottom: 6 }}>
-                        Connected! Welcome, {connectedProfile?.name || session?.user?.name || 'User'}
-                      </div>
-                      <div style={{ fontSize: 13, color: '#6060a0' }}>
-                        {connectedProfile?.email || session?.user?.email} · Moving to next step...
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {autoConnectError && !autoConnecting && (
-                  <>
-                    <div style={{ fontSize: 40 }}>⚠️</div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 15, fontWeight: 600, color: '#e74c3c', marginBottom: 8 }}>
-                        {autoConnectError}
-                      </div>
-                      <button
-                        className="btn-primary"
-                        onClick={handleAutoConnect}
-                        style={{ fontSize: 13, padding: '8px 20px' }}
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Manual cookie fallback — only shown when auto-connect fails */}
+            {/* Cookie connect — primary flow */}
             {needsManualFallback && (
               <div>
+                {/* One-command guide — always open */}
                 <div style={{
-                  padding: '12px 16px', background: 'rgba(255,170,0,0.08)',
-                  border: '1px solid rgba(255,170,0,0.2)', borderRadius: 10,
-                  fontSize: 13, color: '#ffaa44', marginBottom: 24, lineHeight: 1.5,
+                  padding: '20px', background: 'rgba(6,214,160,0.06)',
+                  border: '1px solid rgba(6,214,160,0.2)', borderRadius: 12, marginBottom: 20,
                 }}>
-                  ⚡ Auto-connect unavailable right now. Use the manual method below — takes about 30 seconds.
-                </div>
-
-                <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 20, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>
-                  🔒 Cookies are AES-256 encrypted and stored only on your account. Auto-deleted after 30 days.
-                </div>
-
-                <button
-                  onClick={() => setShowCookieGuide(v => !v)}
-                  style={{
-                    width: '100%', padding: '12px 16px', borderRadius: 10, fontSize: 14,
-                    background: showCookieGuide ? 'rgba(74,144,217,0.1)' : 'rgba(255,255,255,0.03)',
-                    border: '1px solid rgba(74,144,217,0.3)', color: '#c0c0d8',
-                    cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  }}
-                >
-                  <span>📋 How to get your Naukri cookies (30 seconds)</span>
-                  <span style={{ fontSize: 18 }}>{showCookieGuide ? '▲' : '▼'}</span>
-                </button>
-
-                {showCookieGuide && (
-                  <div style={{
-                    marginTop: 2, padding: '16px 20px',
-                    background: 'rgba(74,144,217,0.05)', border: '1px solid rgba(74,144,217,0.15)',
-                    borderRadius: '0 0 10px 10px', fontSize: 13, lineHeight: 1.8,
-                  }}>
-                    <div style={{ color: '#06d6a0', fontWeight: 700, marginBottom: 12 }}>Step-by-step (Chrome):</div>
-                    <ol style={{ margin: 0, paddingLeft: 20, color: '#c0c0d8' }}>
-                      <li>Open <strong>naukri.com</strong> in Chrome (logged in with Google)</li>
-                      <li>Press <kbd style={{ background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 4, padding: '1px 5px' }}>F12</kbd> → <strong>Console</strong> tab</li>
-                      <li>Paste this command and hit Enter:</li>
-                    </ol>
-                    <div style={{
-                      marginTop: 10, padding: '10px 14px',
-                      background: '#0a0a1a', border: '1px solid #2a2a3a', borderRadius: 8,
-                      fontFamily: 'monospace', fontSize: 12, color: '#06d6a0',
-                      cursor: 'text', userSelect: 'all',
-                    }}>
-                      copy(document.cookie)
-                    </div>
-                    <div style={{ marginTop: 8, color: '#6060a0', fontSize: 12 }}>
-                      This copies your cookies. Paste them below ↓
-                    </div>
+                  <div style={{ color: '#06d6a0', fontWeight: 700, fontSize: 14, marginBottom: 14 }}>
+                    ⚡ 3 steps, 10 seconds
                   </div>
-                )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {[
+                      { n: 1, text: 'Open a new tab → go to', link: 'https://www.naukri.com', linkText: 'naukri.com' },
+                      { n: 2, text: 'Press F12 → click Console tab', link: null, linkText: null },
+                      { n: 3, text: 'Paste this command and press Enter:', link: null, linkText: null },
+                    ].map(s => (
+                      <div key={s.n} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                        <div style={{
+                          minWidth: 24, height: 24, borderRadius: '50%',
+                          background: 'rgba(6,214,160,0.15)', border: '1px solid rgba(6,214,160,0.3)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 11, fontWeight: 700, color: '#06d6a0',
+                        }}>{s.n}</div>
+                        <div style={{ fontSize: 13, color: '#c0c0d8', paddingTop: 3 }}>
+                          {s.text}{' '}
+                          {s.link && <a href={s.link} target="_blank" rel="noopener noreferrer" style={{ color: '#4A90D9' }}>{s.linkText}</a>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
 
-                <div style={{ marginTop: 20 }}>
+                  {/* The command — click to copy */}
+                  <div
+                    onClick={() => {
+                      navigator.clipboard.writeText('copy(document.cookie)')
+                    }}
+                    style={{
+                      marginTop: 14, padding: '12px 16px',
+                      background: '#0a0a1a', border: '1px solid rgba(6,214,160,0.3)', borderRadius: 8,
+                      fontFamily: 'monospace', fontSize: 14, color: '#06d6a0',
+                      cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      userSelect: 'all',
+                    }}
+                  >
+                    <span>copy(document.cookie)</span>
+                    <span style={{ fontSize: 11, color: '#06d6a0', opacity: 0.7, fontFamily: 'sans-serif' }}>click to copy</span>
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: '#6060a0', lineHeight: 1.5 }}>
+                    This copies your Naukri session to clipboard. Then paste it in the box below and hit Connect.
+                  </div>
+                </div>
+
+                <div>
                   <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#c0c0d8' }}>
-                    Paste your Naukri cookies here
+                    Paste cookies here
                   </label>
                   <textarea
                     className="input"
-                    rows={4}
-                    placeholder={'nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789; ...'}
+                    rows={3}
+                    placeholder="nauk_at=eyJhbGc...; nkid=abc123; _t=xyz789..."
                     value={cookieStr}
                     onChange={e => setCookieStr(e.target.value)}
                     style={{
-                      width: '100%', boxSizing: 'border-box', resize: 'vertical',
-                      fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+                      width: '100%', boxSizing: 'border-box', resize: 'none',
+                      fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5,
                     }}
                   />
                 </div>
 
                 {connectError && (
-                  <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c', lineHeight: 1.5 }}>
+                  <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8, fontSize: 13, color: '#e74c3c' }}>
                     ⚠ {connectError}
                   </div>
                 )}
@@ -510,7 +317,7 @@ export default function OnboardPage() {
                   className="btn-primary"
                   onClick={handleNaukriConnect}
                   disabled={connecting || cookieStr.trim().length < 10}
-                  style={{ marginTop: 20, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
+                  style={{ marginTop: 16, width: '100%', opacity: connecting || cookieStr.trim().length < 10 ? 0.6 : 1 }}
                 >
                   {connecting ? (
                     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
