@@ -97,6 +97,21 @@ export type ApplyResult = {
   alreadyApplied?: boolean
 }
 
+/**
+ * Try to extract userId from nauk_at JWT token (base64 payload)
+ * Naukri encodes userId/sub in the JWT claims
+ */
+function _extractUserIdFromToken(token: string): string | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    return payload.userId || payload.sub || payload.id || payload.user_id || null
+  } catch {
+    return null
+  }
+}
+
 export class NaukriClient {
   private token: string
   private userId: string
@@ -125,18 +140,68 @@ export class NaukriClient {
   }
 
   /**
-   * LOGIN — tries multiple Naukri endpoints in sequence
+   * LOGIN — reverse-engineered from NopeRi (tested Nov 2026, working)
+   *
+   * KEY DISCOVERIES:
+   * 1. Body is FLAT {username, password} — NO loginDetails wrapper, NO loginType
+   * 2. systemid must be "jobseeker" not "103"
+   * 3. x-requested-with: XMLHttpRequest is required
+   * 4. Bearer token lives in nauk_at COOKIE, not JSON body
+   * 5. Must GET naukri login page first to establish session cookies
+   * 6. v1 endpoint is correct (not v0)
    */
   static async login(email: string, password: string): Promise<LoginResult> {
     const L = '[NaukriClient.login]'
 
-    // Helper: try one endpoint and return parsed result
-    const tryEndpoint = async (
-      label: string,
-      url: string,
-      headers: Record<string, string>,
-      body: Record<string, unknown>,
-    ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null; raw: string }> => {
+    // ── Step 0: GET login page to establish session cookies ──
+    let sessionCookies = ''
+    try {
+      console.log(`${L} → Step 0: fetching session cookies from naukri.com/nlogin/login`)
+      const preRes = await fetch('https://www.naukri.com/nlogin/login', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      })
+      // Collect all set-cookie headers
+      const rawCookies = preRes.headers.getSetCookie?.() ?? []
+      if (rawCookies.length) {
+        sessionCookies = rawCookies.map((c: string) => c.split(';')[0]).join('; ')
+        console.log(`${L}   → got ${rawCookies.length} cookies`)
+      } else {
+        // Fallback: single set-cookie header
+        const single = preRes.headers.get('set-cookie')
+        if (single) {
+          sessionCookies = single.split(';')[0]
+          console.log(`${L}   → got 1 cookie (fallback)`)
+        }
+      }
+    } catch (err) {
+      console.log(`${L}   → pre-GET failed (continuing without cookies): ${err}`)
+    }
+
+    // ── Base headers from NopeRi source (working Nov 2026) ──
+    const BASE_HEADERS: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'appid': '105',
+      'clientid': 'd3skt0p',
+      'systemid': 'jobseeker',       // ← MUST be "jobseeker" not "103"
+      'x-requested-with': 'XMLHttpRequest',   // ← REQUIRED by Naukri
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Origin': 'https://www.naukri.com',
+      'Referer': 'https://www.naukri.com/nlogin/login',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+    }
+    if (sessionCookies) BASE_HEADERS['Cookie'] = sessionCookies
+
+    // ── Helper: POST and get response + cookies ──
+    const tryPost = async (label: string, url: string, body: Record<string, unknown>, extraHeaders?: Record<string, string>) => {
       console.log(`${L} ── ${label} ──`)
       console.log(`${L}   POST ${url}`)
       const bodyStr = JSON.stringify(body)
@@ -144,144 +209,149 @@ export class NaukriClient {
       try {
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
+          headers: { ...BASE_HEADERS, ...extraHeaders },
           body: bodyStr,
         })
         const raw = await res.text()
         console.log(`${L}   → HTTP ${res.status}`)
         console.log(`${L}   → response body: ${raw.slice(0, 600)}`)
+
+        // Extract cookies from response (token is in nauk_at cookie)
+        let cookieToken: string | null = null
+        try {
+          const setCookies = res.headers.getSetCookie?.() ?? []
+          const allCookieStr = setCookies.length
+            ? setCookies.join('; ')
+            : (res.headers.get('set-cookie') ?? '')
+          console.log(`${L}   → set-cookie headers: ${allCookieStr.slice(0, 300)}`)
+          const naukatMatch = allCookieStr.match(/nauk_at=([^;,\s]+)/)
+          cookieToken = naukatMatch?.[1] ?? null
+          if (cookieToken) console.log(`${L}   → nauk_at cookie found: ${cookieToken.slice(0, 30)}...`)
+        } catch { /* ignore */ }
+
         const isJson = raw.trim().startsWith('{') || raw.trim().startsWith('[')
-        const data = isJson ? JSON.parse(raw) : null
-        if (data) console.log(`${L}   → keys: ${Object.keys(data).join(', ')}`)
-        return { ok: res.ok, status: res.status, data, raw }
+        const data = isJson ? (JSON.parse(raw) as Record<string, unknown>) : null
+        if (data) console.log(`${L}   → JSON keys: ${Object.keys(data).join(', ')}`)
+
+        return { ok: res.ok, status: res.status, data, raw, cookieToken }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.log(`${L}   → threw: ${msg}`)
-        return { ok: false, status: 0, data: null, raw: msg }
+        return { ok: false, status: 0, data: null, raw: msg, cookieToken: null }
       }
     }
 
-    // Helper: extract token + userId from various response shapes
-    const extract = (data: Record<string, unknown>) => {
+    // ── Helper: extract token + userId from JSON response ──
+    const extractFromJson = (data: Record<string, unknown>) => {
       const d = (data?.data ?? {}) as Record<string, unknown>
       const token =
         (data.authToken as string) || (data.token as string) || (data.access_token as string) ||
-        (d.authToken as string) || (d.token as string)
+        (d.authToken as string) || (d.token as string) || (d.access_token as string)
       const userId =
         (data.userId as string) || (data.user_id as string) || (data.id as string) ||
         (d.userId as string) || (d.id as string) || (data.sub as string)
       return { token: token || null, userId: userId ? String(userId) : null }
     }
 
-    // ── Naukri requires specific headers from their web app ──
-    // Captured from HAR analysis of naukri.com login flow (Chrome DevTools)
-    // appid=105 = web client, clientid=d3skt0p = desktop, systemid=103 = web
-    // gzip header required — Naukri API returns 400 without Accept-Encoding
-    const WEB_HEADERS = {
-      'appid': '105',
-      'clientid': 'd3skt0p',
-      'systemid': '103',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Content-Type': 'application/json',
-      'Origin': 'https://www.naukri.com',
-      'Referer': 'https://www.naukri.com/nlogin/login',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-origin',
-      'Connection': 'keep-alive',
-    }
-
-    // KEY INSIGHT from logs:
-    // We send loginDetails.username = "email@gmail.com" but Naukri says "username must not be empty"
-    // This means their DTO maps emailId → username via @JsonAlias, NOT username directly
-    // The actual field Naukri expects is emailId (or email), not username
-    // Spring Boot @JsonAlias("emailId") on username field = when emailId missing, username = null
-
-    // ── Attempt 1: loginDetails.emailId (the actual field Naukri expects) ──
+    // ══════════════════════════════════════════════════════════════
+    // ATTEMPT 1: v1 flat body {username, password} — the working way
+    // Source: NopeRi naukri_client.py (tested Nov 2026)
+    // ══════════════════════════════════════════════════════════════
     {
-      const r = await tryEndpoint(
-        'Attempt 1: loginDetails.emailId (correct field name)',
-        `${NAUKRI_BASE}/central-login-services/v0/login`,
-        WEB_HEADERS,
-        { loginDetails: { emailId: email, password }, loginType: 'emailLogin' },
-      )
-      if (r.data) {
-        const { token, userId } = extract(r.data)
-        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
-        if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 1 (emailId field)`)
-          return { success: true, token, userId }
-        }
-        const errData = r.data as Record<string, unknown>
-        const errMsg = (errData.message as string) || `HTTP ${r.status}`
-        console.log(`${L}   → attempt 1 failed: ${errMsg} | validationErrors: ${JSON.stringify(errData.validationErrors)}`)
-      }
-    }
-
-    // ── Attempt 2: loginDetails.email (alternate field name) ──
-    {
-      const r = await tryEndpoint(
-        'Attempt 2: loginDetails.email field',
-        `${NAUKRI_BASE}/central-login-services/v0/login`,
-        WEB_HEADERS,
-        { loginDetails: { email, password }, loginType: 'emailLogin' },
-      )
-      if (r.data) {
-        const { token, userId } = extract(r.data)
-        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
-        if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 2 (email field)`)
-          return { success: true, token, userId }
-        }
-        const errData = r.data as Record<string, unknown>
-        console.log(`${L}   → attempt 2 failed: ${(errData.message as string) || `HTTP ${r.status}`}`)
-      }
-    }
-
-    // ── Attempt 3: v1 with emailId ──
-    {
-      const r = await tryEndpoint(
-        'Attempt 3: v1 loginDetails.emailId',
+      const r = await tryPost(
+        'Attempt 1: v1 FLAT body {username, password} [NopeRi method]',
         `${NAUKRI_BASE}/central-login-services/v1/login`,
-        WEB_HEADERS,
-        { loginDetails: { emailId: email, password }, loginType: 'emailLogin' },
+        { username: email, password },
       )
-      if (r.data) {
-        const { token, userId } = extract(r.data)
-        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
-        if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 3 (v1 emailId)`)
-          return { success: true, token, userId }
+      const cookieToken = r.cookieToken
+      const { token: jsonToken, userId } = r.data ? extractFromJson(r.data) : { token: null, userId: null }
+      const token = cookieToken || jsonToken
+      console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} (cookie=${!!cookieToken} json=${!!jsonToken}) | userId: ${userId ?? 'null'}`)
+      if ((r.ok || cookieToken) && token) {
+        // userId might be in cookie data or json — also try extracting from nauk_at JWT
+        const finalUserId = userId || _extractUserIdFromToken(token)
+        if (finalUserId) {
+          console.log(`${L} ✓ SUCCESS via attempt 1 (v1 flat body)`)
+          return { success: true, token, userId: finalUserId }
         }
-        const errData = r.data as Record<string, unknown>
-        console.log(`${L}   → attempt 3 failed: ${(errData.message as string) || `HTTP ${r.status}`}`)
+        // token exists but no userId - still return success, caller can fetch profile
+        if (token) {
+          console.log(`${L} ✓ SUCCESS via attempt 1 (token only, no userId yet)`)
+          return { success: true, token, userId: userId || '' }
+        }
+      }
+      if (r.data) {
+        const errMsg = (r.data.message as string) || `HTTP ${r.status}`
+        console.log(`${L}   → attempt 1 failed: ${errMsg}`)
+        // If it's a real auth error (wrong credentials), bubble up immediately
+        if (r.status === 401 || (errMsg && (errMsg.toLowerCase().includes('invalid') || errMsg.toLowerCase().includes('incorrect') || errMsg.toLowerCase().includes('wrong')))) {
+          return { success: false, error: errMsg, statusCode: r.status }
+        }
       }
     }
 
-    // ── Attempt 4: both username AND emailId (belt + suspenders) ──
+    // ══════════════════════════════════════════════════════════════
+    // ATTEMPT 2: v0 flat body {username, password}
+    // ══════════════════════════════════════════════════════════════
     {
-      const r = await tryEndpoint(
-        'Attempt 4: loginDetails with both username+emailId',
+      const r = await tryPost(
+        'Attempt 2: v0 FLAT body {username, password}',
         `${NAUKRI_BASE}/central-login-services/v0/login`,
-        WEB_HEADERS,
-        { loginDetails: { username: email, emailId: email, password }, loginType: 'emailLogin' },
+        { username: email, password },
       )
-      if (r.data) {
-        const { token, userId } = extract(r.data)
-        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
-        if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 4 (both fields)`)
-          return { success: true, token, userId }
-        }
-        const errData = r.data as Record<string, unknown>
-        const errMsg = (errData.message as string) || `HTTP ${r.status}`
-        console.log(`${L}   → attempt 4 failed: ${errMsg}`)
-        return { success: false, error: errMsg, statusCode: r.status }
+      const cookieToken = r.cookieToken
+      const { token: jsonToken, userId } = r.data ? extractFromJson(r.data) : { token: null, userId: null }
+      const token = cookieToken || jsonToken
+      console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
+      if ((r.ok || cookieToken) && token) {
+        const finalUserId = userId || _extractUserIdFromToken(token)
+        console.log(`${L} ✓ SUCCESS via attempt 2 (v0 flat body)`)
+        return { success: true, token, userId: finalUserId || userId || '' }
       }
-      return { success: false, error: `Non-JSON from Naukri (HTTP ${r.status})`, statusCode: r.status }
+      if (r.data) console.log(`${L}   → attempt 2 failed: ${(r.data.message as string) || `HTTP ${r.status}`}`)
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // ATTEMPT 3: v1 flat body, appid=103 (alternate appid)
+    // ══════════════════════════════════════════════════════════════
+    {
+      const r = await tryPost(
+        'Attempt 3: v1 flat body appid=103',
+        `${NAUKRI_BASE}/central-login-services/v1/login`,
+        { username: email, password },
+        { 'appid': '103' },
+      )
+      const cookieToken = r.cookieToken
+      const { token: jsonToken, userId } = r.data ? extractFromJson(r.data) : { token: null, userId: null }
+      const token = cookieToken || jsonToken
+      console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
+      if ((r.ok || cookieToken) && token) {
+        console.log(`${L} ✓ SUCCESS via attempt 3 (appid=103)`)
+        return { success: true, token, userId: userId || '' }
+      }
+      if (r.data) console.log(`${L}   → attempt 3 failed: ${(r.data.message as string) || `HTTP ${r.status}`}`)
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // ATTEMPT 4: v1 nested loginDetails (old format, last resort)
+    // ══════════════════════════════════════════════════════════════
+    {
+      const r = await tryPost(
+        'Attempt 4: v1 nested loginDetails.username (old format)',
+        `${NAUKRI_BASE}/central-login-services/v1/login`,
+        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
+      )
+      const cookieToken = r.cookieToken
+      const { token: jsonToken, userId } = r.data ? extractFromJson(r.data) : { token: null, userId: null }
+      const token = cookieToken || jsonToken
+      console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
+      if ((r.ok || cookieToken) && token) {
+        console.log(`${L} ✓ SUCCESS via attempt 4 (nested)`)
+        return { success: true, token, userId: userId || '' }
+      }
+      const errMsg = r.data ? ((r.data.message as string) || `HTTP ${r.status}`) : `HTTP ${r.status}`
+      console.log(`${L}   → attempt 4 failed: ${errMsg}`)
+      return { success: false, error: errMsg, statusCode: r.status }
     }
   }
 
