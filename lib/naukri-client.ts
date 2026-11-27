@@ -194,19 +194,25 @@ export class NaukriClient {
       'Connection': 'keep-alive',
     }
 
-    // ── Attempt 1: standard v2 login (most common endpoint used by web) ──
+    // KEY INSIGHT from logs:
+    // We send loginDetails.username = "email@gmail.com" but Naukri says "username must not be empty"
+    // This means their DTO maps emailId → username via @JsonAlias, NOT username directly
+    // The actual field Naukri expects is emailId (or email), not username
+    // Spring Boot @JsonAlias("emailId") on username field = when emailId missing, username = null
+
+    // ── Attempt 1: loginDetails.emailId (the actual field Naukri expects) ──
     {
       const r = await tryEndpoint(
-        'Attempt 1: v2 login (web standard)',
-        `${NAUKRI_BASE}/central-login-services/v2/login`,
+        'Attempt 1: loginDetails.emailId (correct field name)',
+        `${NAUKRI_BASE}/central-login-services/v0/login`,
         WEB_HEADERS,
-        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
+        { loginDetails: { emailId: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 1 (v2)`)
+          console.log(`${L} ✓ SUCCESS via attempt 1 (emailId field)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
@@ -215,19 +221,19 @@ export class NaukriClient {
       }
     }
 
-    // ── Attempt 2: v0 login with nested loginDetails ──
+    // ── Attempt 2: loginDetails.email (alternate field name) ──
     {
       const r = await tryEndpoint(
-        'Attempt 2: v0 login nested body',
+        'Attempt 2: loginDetails.email field',
         `${NAUKRI_BASE}/central-login-services/v0/login`,
         WEB_HEADERS,
-        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
+        { loginDetails: { email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 2 (v0 nested)`)
+          console.log(`${L} ✓ SUCCESS via attempt 2 (email field)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
@@ -235,44 +241,39 @@ export class NaukriClient {
       }
     }
 
-    // ── Attempt 3: flat body format (some versions) ──
+    // ── Attempt 3: v1 with emailId ──
     {
       const r = await tryEndpoint(
-        'Attempt 3: flat body username+password',
-        `${NAUKRI_BASE}/central-login-services/v0/login`,
+        'Attempt 3: v1 loginDetails.emailId',
+        `${NAUKRI_BASE}/central-login-services/v1/login`,
         WEB_HEADERS,
-        { username: email, password, loginType: 'emailLogin' },
+        { loginDetails: { emailId: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 3 (flat body)`)
+          console.log(`${L} ✓ SUCCESS via attempt 3 (v1 emailId)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
-        const errMsg = (errData.message as string) || `HTTP ${r.status}`
-        console.log(`${L}   → attempt 3 failed: ${errMsg}`)
-        // If we got a real Naukri error message (like "Invalid credentials"), bubble it up
-        if (r.status === 401 || r.status === 403 || errMsg.toLowerCase().includes('invalid') || errMsg.toLowerCase().includes('wrong')) {
-          return { success: false, error: errMsg, statusCode: r.status }
-        }
+        console.log(`${L}   → attempt 3 failed: ${(errData.message as string) || `HTTP ${r.status}`}`)
       }
     }
 
-    // ── Attempt 4: v1 login ──
+    // ── Attempt 4: both username AND emailId (belt + suspenders) ──
     {
       const r = await tryEndpoint(
-        'Attempt 4: v1 login endpoint',
-        `${NAUKRI_BASE}/central-login-services/v1/login`,
+        'Attempt 4: loginDetails with both username+emailId',
+        `${NAUKRI_BASE}/central-login-services/v0/login`,
         WEB_HEADERS,
-        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
+        { loginDetails: { username: email, emailId: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 4 (v1)`)
+          console.log(`${L} ✓ SUCCESS via attempt 4 (both fields)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
