@@ -139,15 +139,17 @@ export class NaukriClient {
     ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null; raw: string }> => {
       console.log(`${L} ── ${label} ──`)
       console.log(`${L}   POST ${url}`)
+      const bodyStr = JSON.stringify(body)
+      console.log(`${L}   → sending body: ${bodyStr}`)
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify(body),
+          body: bodyStr,
         })
         const raw = await res.text()
         console.log(`${L}   → HTTP ${res.status}`)
-        console.log(`${L}   → body: ${raw.slice(0, 500)}`)
+        console.log(`${L}   → response body: ${raw.slice(0, 600)}`)
         const isJson = raw.trim().startsWith('{') || raw.trim().startsWith('[')
         const data = isJson ? JSON.parse(raw) : null
         if (data) console.log(`${L}   → keys: ${Object.keys(data).join(', ')}`)
@@ -171,51 +173,61 @@ export class NaukriClient {
       return { token: token || null, userId: userId ? String(userId) : null }
     }
 
-    const DESKTOP_HEADERS = {
+    // ── Naukri requires specific headers from their web app ──
+    // Captured from HAR analysis of naukri.com login flow (Chrome DevTools)
+    // appid=105 = web client, clientid=d3skt0p = desktop, systemid=103 = web
+    // gzip header required — Naukri API returns 400 without Accept-Encoding
+    const WEB_HEADERS = {
       'appid': '105',
       'clientid': 'd3skt0p',
       'systemid': '103',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Content-Type': 'application/json',
       'Origin': 'https://www.naukri.com',
       'Referer': 'https://www.naukri.com/nlogin/login',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      'Connection': 'keep-alive',
     }
 
-    // ── Attempt 1: CORRECT nested body — logs revealed loginDetails.username is required ──
-    // Error from attempt 2 said: "loginUsingEmailOrUsername.loginDetails.username must not be empty"
+    // ── Attempt 1: standard v2 login (most common endpoint used by web) ──
     {
       const r = await tryEndpoint(
-        'Attempt 1: nested loginDetails body (correct format from error trace)',
-        `${NAUKRI_BASE}/central-login-services/v0/login`,
-        DESKTOP_HEADERS,
+        'Attempt 1: v2 login (web standard)',
+        `${NAUKRI_BASE}/central-login-services/v2/login`,
+        WEB_HEADERS,
         { loginDetails: { username: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 1`)
+          console.log(`${L} ✓ SUCCESS via attempt 1 (v2)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
         const errMsg = (errData.message as string) || `HTTP ${r.status}`
-        console.log(`${L}   → attempt 1 failed: ${errMsg}`)
+        console.log(`${L}   → attempt 1 failed: ${errMsg} | validationErrors: ${JSON.stringify(errData.validationErrors)}`)
       }
     }
 
-    // ── Attempt 2: same nested body, explicit loginType inside loginDetails ──
+    // ── Attempt 2: v0 login with nested loginDetails ──
     {
       const r = await tryEndpoint(
-        'Attempt 2: loginDetails with loginType inside',
+        'Attempt 2: v0 login nested body',
         `${NAUKRI_BASE}/central-login-services/v0/login`,
-        DESKTOP_HEADERS,
-        { loginDetails: { username: email, password, loginType: 'emailLogin' } },
+        WEB_HEADERS,
+        { loginDetails: { username: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 2`)
+          console.log(`${L} ✓ SUCCESS via attempt 2 (v0 nested)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
@@ -223,25 +235,49 @@ export class NaukriClient {
       }
     }
 
-    // ── Attempt 3: v1 endpoint ──
+    // ── Attempt 3: flat body format (some versions) ──
     {
       const r = await tryEndpoint(
-        'Attempt 3: v1 login endpoint',
+        'Attempt 3: flat body username+password',
+        `${NAUKRI_BASE}/central-login-services/v0/login`,
+        WEB_HEADERS,
+        { username: email, password, loginType: 'emailLogin' },
+      )
+      if (r.data) {
+        const { token, userId } = extract(r.data)
+        console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
+        if (r.ok && token && userId) {
+          console.log(`${L} ✓ SUCCESS via attempt 3 (flat body)`)
+          return { success: true, token, userId }
+        }
+        const errData = r.data as Record<string, unknown>
+        const errMsg = (errData.message as string) || `HTTP ${r.status}`
+        console.log(`${L}   → attempt 3 failed: ${errMsg}`)
+        // If we got a real Naukri error message (like "Invalid credentials"), bubble it up
+        if (r.status === 401 || r.status === 403 || errMsg.toLowerCase().includes('invalid') || errMsg.toLowerCase().includes('wrong')) {
+          return { success: false, error: errMsg, statusCode: r.status }
+        }
+      }
+    }
+
+    // ── Attempt 4: v1 login ──
+    {
+      const r = await tryEndpoint(
+        'Attempt 4: v1 login endpoint',
         `${NAUKRI_BASE}/central-login-services/v1/login`,
-        DESKTOP_HEADERS,
+        WEB_HEADERS,
         { loginDetails: { username: email, password }, loginType: 'emailLogin' },
       )
       if (r.data) {
         const { token, userId } = extract(r.data)
         console.log(`${L}   → token: ${token?.slice(0, 20) ?? 'null'} | userId: ${userId ?? 'null'}`)
         if (r.ok && token && userId) {
-          console.log(`${L} ✓ SUCCESS via attempt 3`)
+          console.log(`${L} ✓ SUCCESS via attempt 4 (v1)`)
           return { success: true, token, userId }
         }
         const errData = r.data as Record<string, unknown>
         const errMsg = (errData.message as string) || `HTTP ${r.status}`
-        console.log(`${L}   → attempt 3 failed: ${errMsg}`)
-        // Return the actual Naukri error (e.g. "Invalid credentials") so user sees it
+        console.log(`${L}   → attempt 4 failed: ${errMsg}`)
         return { success: false, error: errMsg, statusCode: r.status }
       }
       return { success: false, error: `Non-JSON from Naukri (HTTP ${r.status})`, statusCode: r.status }
@@ -252,17 +288,26 @@ export class NaukriClient {
    * GET FULL PROFILE — resman-aggregator-services
    */
   async getProfile(): Promise<NaukriProfile | null> {
-    try {
-      const res = await fetch(`${NMA_BASE}${PATHS.USERS_SELF}`, {
-        headers: this.headers(),
-      })
-      if (!res.ok) return null
-      const data = await res.json()
-      // normalize various response shapes
-      return data.data || data.profile || data
-    } catch {
-      return null
+    // Try multiple profile endpoints — NMA base is dead, use naukri.com
+    const endpoints = [
+      `${NAUKRI_BASE}${PATHS.USERS_SELF}`,
+      `${NAUKRI_BASE}${PATHS.USERS_SELF_V1}`,
+      `${NMA_BASE}${PATHS.USERS_SELF}`,
+    ]
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, { headers: this.headers() })
+        if (!res.ok) continue
+        const data = await res.json()
+        const profile = data.data || data.profile || data
+        if (profile && (profile.userId || profile.name || profile.email)) {
+          return profile
+        }
+      } catch {
+        continue
+      }
     }
+    return null
   }
 
   /**
@@ -270,16 +315,22 @@ export class NaukriClient {
    * From: resman-aggregator-services/v0/uniqueId
    */
   async getCvId(): Promise<string | null> {
-    try {
-      const res = await fetch(`${NMA_BASE}${PATHS.UNIQUE_ID}`, {
-        headers: this.headers(),
-      })
-      if (!res.ok) return null
-      const data = await res.json()
-      return data.uniqueId || data.cvId || data.data?.uniqueId || null
-    } catch {
-      return null
+    const endpoints = [
+      `${NAUKRI_BASE}${PATHS.UNIQUE_ID}`,
+      `${NMA_BASE}${PATHS.UNIQUE_ID}`,
+    ]
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, { headers: this.headers() })
+        if (!res.ok) continue
+        const data = await res.json()
+        const id = data.uniqueId || data.cvId || data.data?.uniqueId
+        if (id) return String(id)
+      } catch {
+        continue
+      }
     }
+    return null
   }
 
   /**
@@ -287,7 +338,7 @@ export class NaukriClient {
    */
   async getSearchImpressions(): Promise<number> {
     try {
-      const res = await fetch(`${NMA_BASE}${PATHS.SEARCH_IMPRESSIONS}`, {
+      const res = await fetch(`${NAUKRI_BASE}${PATHS.SEARCH_IMPRESSIONS}`, {
         headers: this.headers(),
       })
       if (!res.ok) return 0
@@ -305,7 +356,7 @@ export class NaukriClient {
   async getRecruiterViews(page = 1): Promise<{ views: unknown[]; total: number }> {
     try {
       const res = await fetch(
-        `${NMA_BASE}${PATHS.RECRUITER_ACTIONS}?page=${page}&limit=20`,
+        `${NAUKRI_BASE}${PATHS.RECRUITER_ACTIONS}?page=${page}&limit=20`,
         { headers: this.headers() }
       )
       if (!res.ok) return { views: [], total: 0 }
