@@ -135,7 +135,12 @@ export default function DashboardPage() {
       const res = await fetch('/api/naukri/jobs/apply', { method: 'POST' })
       const data = await res.json()
       if (!res.ok) {
-        setTriggerResult(`⚠ ${data.error}`)
+        if (data.tokenExpired) {
+          setTokenExpired(true)
+          setTriggerResult('⚠ Naukri session expired — reconnect your account first')
+        } else {
+          setTriggerResult(`⚠ ${data.error}`)
+        }
       } else {
         setTriggerResult(`✓ Engine started — found ${data.result?.jobsFound ?? 0} jobs, applied to ${data.result?.applied ?? 0}`)
         setTimeout(fetchData, 3000)
@@ -321,7 +326,13 @@ export default function DashboardPage() {
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div className="badge-success" style={{ fontSize: 12 }}>✓ Naukri Connected</div>
+            {tokenExpired ? (
+              <div style={{ fontSize: 12, padding: '3px 10px', borderRadius: 20, background: 'rgba(255,68,68,0.1)', color: '#ff7070', border: '1px solid rgba(255,68,68,0.3)', fontWeight: 600 }}>
+                ⚠ Session Expired
+              </div>
+            ) : (
+              <div className="badge-success" style={{ fontSize: 12 }}>✓ Naukri Connected</div>
+            )}
           </div>
         </div>
 

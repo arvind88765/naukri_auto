@@ -28,6 +28,13 @@ export async function POST() {
 
   if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (!user.naukri_user_id) return NextResponse.json({ error: 'Naukri not connected' }, { status: 400 })
+  // Token was cleared (expired) — block engine and prompt reconnect
+  if (user.naukri_user_id && !user.naukri_token) {
+    return NextResponse.json(
+      { error: 'Naukri session expired. Please reconnect your account from the dashboard.', tokenExpired: true },
+      { status: 401 }
+    )
+  }
   if (!user.base_resume_text) return NextResponse.json({ error: 'No resume uploaded. Go to /resume to build one.' }, { status: 400 })
 
   // If cv_id missing, try to fetch it on-the-fly (login may have returned null)

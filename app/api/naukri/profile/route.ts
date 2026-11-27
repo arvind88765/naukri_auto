@@ -32,9 +32,12 @@ export async function GET() {
 
   let liveProfile = null
   let searchImpressions = 0
-  let tokenExpired = false
 
-  // Try to get live Naukri data if connected
+  // Persistent expired state: user was connected (naukri_user_id set) but token is gone
+  // This stays true across page refreshes until they reconnect
+  const tokenExpired = !!(user.naukri_user_id && !user.naukri_token)
+
+  // Try to get live Naukri data if connected and token present
   if (user.naukri_token && user.naukri_user_id) {
     try {
       const token = decrypt(user.naukri_token)
@@ -49,7 +52,6 @@ export async function GET() {
       if (err instanceof TokenExpiredError) {
         // Token is dead — wipe it from DB so we don't keep retrying with it
         console.log('[profile GET] token expired — clearing from DB')
-        tokenExpired = true
         await supabaseAdmin
           .from('users')
           .update({
