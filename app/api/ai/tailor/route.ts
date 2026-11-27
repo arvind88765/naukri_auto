@@ -59,11 +59,12 @@ export async function POST(req: NextRequest) {
 
   const [tailored, matchAnalysis] = await Promise.all([
     tailorResume({
-      baseResume: user.base_resume_text,
+      resumeText: user.base_resume_text,
       jobTitle: body.jobTitle,
       companyName: body.companyName,
       jobDescription: body.jobDescription,
-      candidateSkills: user.preferences?.skills,
+      matchedSkills: user.preferences?.skills ?? [],
+      missingSkills: [],
     }),
     scoreMatch(
       user.base_resume_text,

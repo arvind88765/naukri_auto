@@ -1,13 +1,58 @@
-/**
- * AI Resume Tailoring — using Claude API
- * Tailors resume per job JD using context from Naukri JD SDUI vars we extracted
- */
+// AI layer — Google Gemini (free tier)
+// gemini-2.0-flash for scoring (fast + cheap)
+// gemini-2.0-flash for tailoring (strong enough, free)
 
-import Anthropic from '@anthropic-ai/sdk'
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
+const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+async function gemini(model: string, prompt: string): Promise<string> {
+  const res = await fetch(
+    `${BASE}/${model}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 2048,
+        },
+      }),
+    }
+  )
 
-export type TailoredResume = {
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gemini error ${res.status}: ${err}`)
+  }
+
+  const data = await res.json()
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+}
+
+function parseJSON<T>(text: string, fallback: T): T {
+  try {
+    const match = text.match(/```json\s*([\s\S]*?)```/) ||
+                  text.match(/\{[\s\S]*\}/) ||
+                  text.match(/\[[\s\S]*\]/)
+    const raw = match ? (match[1] ?? match[0]) : text
+    return JSON.parse(raw.trim())
+  } catch {
+    return fallback
+  }
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface MatchAnalysis {
+  score: number          // 0-100
+  matchedSkills: string[]
+  missingSkills: string[]
+  reasoning: string
+  recommend: boolean
+}
+
+export interface TailoredResume {
   summary: string
   skills: string[]
   optimizedBullets: string[]
@@ -15,179 +60,127 @@ export type TailoredResume = {
   coverNote: string
 }
 
-export type MatchAnalysis = {
-  score: number          // 0-100
-  matchedSkills: string[]
-  missingSkills: string[]
-  reasoning: string
-  recommend: boolean     // should auto-apply
-}
+// ─── Score match ─────────────────────────────────────────────────────────────
 
-/**
- * Score how well a resume matches a job description
- * Uses claude-haiku for speed (called per-job in a loop)
- */
 export async function scoreMatch(
   resumeText: string,
   jobTitle: string,
   jobDescription: string,
-  candidateExperience: number
+  experience: number
 ): Promise<MatchAnalysis> {
-  const prompt = `You are an expert ATS (Applicant Tracking System) and recruiter.
+  const prompt = `You are a technical recruiter. Score how well this resume matches the job.
 
 JOB TITLE: ${jobTitle}
-JOB DESCRIPTION:
-${jobDescription.slice(0, 1500)}
+JOB DESCRIPTION: ${jobDescription.slice(0, 1500)}
 
-CANDIDATE RESUME (summary):
-${resumeText.slice(0, 1000)}
-Experience: ${candidateExperience} years
+CANDIDATE RESUME (${experience} years exp):
+${resumeText.slice(0, 2000)}
 
-Analyze the match. Return ONLY valid JSON, no markdown:
+Return ONLY valid JSON (no markdown):
 {
   "score": <0-100 integer>,
   "matchedSkills": ["skill1", "skill2"],
-  "missingSkills": ["skill3"],
-  "reasoning": "one sentence why",
+  "missingSkills": ["skill1"],
+  "reasoning": "<2 sentences>",
   "recommend": <true if score >= 60>
 }`
 
   try {
-    const msg = await claude.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 400,
-      messages: [{ role: 'user', content: prompt }],
+    const text = await gemini('gemini-2.0-flash', prompt)
+    const result = parseJSON<MatchAnalysis>(text, {
+      score: 50, matchedSkills: [], missingSkills: [],
+      reasoning: 'Could not parse AI response', recommend: false,
     })
-
-    const text = (msg.content[0] as { type: string; text: string }).text.trim()
-    // Strip markdown code blocks if present
-    const jsonStr = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
-    return JSON.parse(jsonStr)
+    result.score = Math.max(0, Math.min(100, Number(result.score) || 50))
+    result.recommend = result.score >= 60
+    return result
   } catch {
-    // Fallback: keyword match scoring
-    const jdLower = jobDescription.toLowerCase()
-    const resumeLower = resumeText.toLowerCase()
-
-    const keywords = jobTitle.toLowerCase().split(/\s+/)
-    let hits = 0
-    keywords.forEach(kw => { if (resumeLower.includes(kw)) hits++ })
-    const score = Math.min(90, Math.round((hits / Math.max(keywords.length, 1)) * 70))
-
-    return {
-      score,
-      matchedSkills: [],
-      missingSkills: [],
-      reasoning: 'Keyword-based fallback scoring',
-      recommend: score >= 60,
-    }
+    return { score: 50, matchedSkills: [], missingSkills: [], reasoning: 'AI scoring failed', recommend: false }
   }
 }
 
-/**
- * Tailor resume for a specific job using Claude
- * Uses jd_sdui_sample.json vars we extracted: jobTitle, companyName, etc.
- */
+// ─── Tailor resume ───────────────────────────────────────────────────────────
+
 export async function tailorResume(params: {
-  baseResume: string
+  resumeText: string
   jobTitle: string
-  companyName: string
   jobDescription: string
-  candidateSkills?: string[]
-  targetKeywords?: string[]
+  companyName: string
+  matchedSkills: string[]
+  missingSkills: string[]
 }): Promise<TailoredResume> {
-  const { baseResume, jobTitle, companyName, jobDescription, candidateSkills = [] } = params
+  const { resumeText, jobTitle, jobDescription, companyName, matchedSkills, missingSkills } = params
 
-  const prompt = `You are an expert resume writer and ATS optimization specialist.
+  const prompt = `You are a professional resume writer. Tailor this resume for the specific job.
 
-COMPANY: ${companyName}
-JOB TITLE: ${jobTitle}
+JOB: ${jobTitle} at ${companyName}
+DESCRIPTION: ${jobDescription.slice(0, 1500)}
+MATCHED SKILLS: ${matchedSkills.join(', ')}
+SKILLS TO HIGHLIGHT: ${missingSkills.join(', ')}
 
-JOB DESCRIPTION:
-${jobDescription.slice(0, 2000)}
+ORIGINAL RESUME:
+${resumeText.slice(0, 2500)}
 
-CANDIDATE'S BASE RESUME:
-${baseResume.slice(0, 2000)}
-
-CANDIDATE'S SKILLS: ${candidateSkills.join(', ')}
-
-Task: Tailor this resume for the specific job.
-- Rewrite the professional summary (3-4 sentences max) highlighting most relevant experience
-- Extract top 8-12 skills matching the JD
-- Rewrite 4-6 achievement bullets using STAR format with numbers where possible
-- Write a short cover note (2-3 sentences)
-- Extract keywords from JD that match the resume
-
-Return ONLY valid JSON, no markdown:
+Return ONLY valid JSON (no markdown):
 {
-  "summary": "Professional summary text here...",
-  "skills": ["Skill1", "Skill2", "Skill3"],
+  "summary": "<2-3 sentence professional summary tailored to this role>",
+  "skills": ["skill1", "skill2", "skill3"],
   "optimizedBullets": [
-    "• Achievement with metric",
-    "• Achievement with impact"
+    "<achievement bullet point 1 with metrics>",
+    "<achievement bullet point 2>",
+    "<achievement bullet point 3>"
   ],
   "matchedKeywords": ["keyword1", "keyword2"],
-  "coverNote": "I am excited to apply for the ${jobTitle} position at ${companyName}..."
+  "coverNote": "<3-4 sentence cover note specifically for ${companyName} and this ${jobTitle} role>"
 }`
 
   try {
-    const msg = await claude.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 1200,
-      messages: [{ role: 'user', content: prompt }],
+    const text = await gemini('gemini-2.0-flash', prompt)
+    const result = parseJSON<TailoredResume>(text, {
+      summary: '', skills: [], optimizedBullets: [], matchedKeywords: [], coverNote: '',
     })
-
-    const text = (msg.content[0] as { type: string; text: string }).text.trim()
-    const jsonStr = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
-    return JSON.parse(jsonStr)
+    return result
   } catch {
-    // Fallback: return base resume structure
-    return {
-      summary: `Experienced professional applying for ${jobTitle} at ${companyName}.`,
-      skills: candidateSkills.slice(0, 10),
-      optimizedBullets: ['• Extensive experience in relevant domain', '• Strong technical skills'],
-      matchedKeywords: [],
-      coverNote: `I am excited to apply for the ${jobTitle} position at ${companyName}.`,
-    }
+    return { summary: '', skills: [], optimizedBullets: [], matchedKeywords: [], coverNote: '' }
   }
 }
 
-/**
- * Extract resume text from raw paste/upload
- */
+// ─── Extract resume info ──────────────────────────────────────────────────────
+
 export async function extractResumeInfo(resumeText: string): Promise<{
-  name?: string
-  email?: string
-  phone?: string
-  experience?: number
-  currentRole?: string
+  name: string
+  email: string
+  phone: string
+  experience: number
   skills: string[]
-  summary?: string
+  currentRole: string
+  education: string
+  summary: string
 }> {
-  const prompt = `Extract information from this resume. Return ONLY valid JSON:
-{
-  "name": "...",
-  "email": "...",
-  "phone": "...",
-  "experience": <years as number>,
-  "currentRole": "...",
-  "skills": ["skill1", "skill2"],
-  "summary": "one paragraph professional summary"
-}
+  const prompt = `Extract structured information from this resume.
 
 RESUME:
-${resumeText.slice(0, 3000)}`
+${resumeText.slice(0, 3000)}
+
+Return ONLY valid JSON (no markdown):
+{
+  "name": "<full name>",
+  "email": "<email>",
+  "phone": "<phone>",
+  "experience": <years as number>,
+  "skills": ["skill1", "skill2"],
+  "currentRole": "<current or most recent job title>",
+  "education": "<highest degree and institution>",
+  "summary": "<2 sentence professional summary>"
+}`
 
   try {
-    const msg = await claude.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }],
+    const text = await gemini('gemini-2.0-flash', prompt)
+    return parseJSON(text, {
+      name: '', email: '', phone: '', experience: 0,
+      skills: [], currentRole: '', education: '', summary: '',
     })
-
-    const text = (msg.content[0] as { type: string; text: string }).text.trim()
-    const jsonStr = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
-    return JSON.parse(jsonStr)
   } catch {
-    return { skills: [] }
+    return { name: '', email: '', phone: '', experience: 0, skills: [], currentRole: '', education: '', summary: '' }
   }
 }
