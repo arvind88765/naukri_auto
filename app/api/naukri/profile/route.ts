@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { supabaseAdmin } from '@/lib/supabase'
-import { NaukriClient } from '@/lib/naukri-client'
+import { NaukriClient, TokenExpiredError } from '@/lib/naukri-client'
 import { decrypt } from '@/lib/encryption'
 import { z } from 'zod'
 
@@ -32,6 +32,7 @@ export async function GET() {
 
   let liveProfile = null
   let searchImpressions = 0
+  let tokenExpired = false
 
   // Try to get live Naukri data if connected
   if (user.naukri_token && user.naukri_user_id) {
@@ -44,8 +45,21 @@ export async function GET() {
       ])
       liveProfile = profile
       searchImpressions = impressions
-    } catch {
-      // Fall through to cached data
+    } catch (err) {
+      if (err instanceof TokenExpiredError) {
+        // Token is dead — wipe it from DB so we don't keep retrying with it
+        console.log('[profile GET] token expired — clearing from DB')
+        tokenExpired = true
+        await supabaseAdmin
+          .from('users')
+          .update({
+            naukri_token: null,
+            naukri_cv_id: null,
+            naukri_token_expires_at: null,
+          })
+          .eq('id', user.id)
+      }
+      // Any other error: fall through to cached data
     }
   }
 
@@ -71,12 +85,13 @@ export async function GET() {
     .gte('applied_at', today.toISOString())
 
   return NextResponse.json({
+    tokenExpired,
     user: {
       id: user.id,
       name: user.name,
       email: user.email,
       avatar: user.avatar_url,
-      naukriConnected: !!user.naukri_user_id,
+      naukriConnected: tokenExpired ? false : !!user.naukri_user_id,
       naukriEmail: user.naukri_email,
       onboardingCompleted: user.onboarding_completed,
       autoApplyEnabled: user.auto_apply_enabled,

@@ -1,7 +1,7 @@
 'use client'
 
 import { useSession } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import Navbar from '@/components/Navbar'
 
@@ -39,6 +39,8 @@ const WFH_OPTS = [
 export default function OnboardPage() {
   const { data: session, status, update } = useSession()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const isReconnect = searchParams.get('reconnect') === '1'
   const [step, setStep] = useState<Step>('naukri')
 
   // Naukri connect state
@@ -65,11 +67,12 @@ export default function OnboardPage() {
     if (status === 'unauthenticated') router.push('/')
     if (status === 'authenticated') {
       const user = session?.user as { onboardingCompleted?: boolean; naukriConnected?: boolean } | undefined
-      if (user?.onboardingCompleted && user?.naukriConnected) {
+      if (!isReconnect && user?.onboardingCompleted && user?.naukriConnected) {
         router.push('/dashboard')
-      } else if (user?.naukriConnected) {
+      } else if (!isReconnect && user?.naukriConnected) {
         setStep('prefs')
       }
+      // isReconnect=1 → stay on 'naukri' step to let user re-enter credentials
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, session?.user?.id])
@@ -88,6 +91,11 @@ export default function OnboardPage() {
       if (!res.ok) throw new Error(data.error || data.hint || 'Login failed')
       setConnectedProfile(data.profile)
       await update()
+      // If reconnecting from expired session, go straight back to dashboard
+      if (isReconnect) {
+        router.push('/dashboard')
+        return
+      }
       setStep('prefs')
     } catch (e: unknown) {
       setConnectError(e instanceof Error ? e.message : 'Failed to connect Naukri account')
@@ -221,9 +229,13 @@ export default function OnboardPage() {
         {/* ── Step 1: Naukri Login ── */}
         {step === 'naukri' && (
           <div>
-            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Connect your Naukri account</h1>
+            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
+              {isReconnect ? '🔐 Reconnect Naukri' : 'Connect your Naukri account'}
+            </h1>
             <p style={{ color: '#9090aa', marginBottom: 24, lineHeight: 1.6 }}>
-              Enter your Naukri credentials. We use these to fetch your profile and auto-apply on your behalf.
+              {isReconnect
+                ? 'Your previous session expired. Re-enter your Naukri credentials to resume auto-apply.'
+                : 'Enter your Naukri credentials. We use these to fetch your profile and auto-apply on your behalf.'}
             </p>
 
             <div style={{ background: 'rgba(74,144,217,0.08)', border: '1px solid rgba(74,144,217,0.2)', borderRadius: 10, padding: 14, marginBottom: 24, fontSize: 13, color: '#4A90D9', lineHeight: 1.5 }}>

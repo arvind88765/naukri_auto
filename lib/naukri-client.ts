@@ -14,6 +14,17 @@
 const NMA_BASE = 'https://www.nma.mobi'
 const NAUKRI_BASE = 'https://www.naukri.com'
 
+/**
+ * Thrown when Naukri returns HTTP 401 — token has expired.
+ * Callers should clear the stored token and prompt re-login.
+ */
+export class TokenExpiredError extends Error {
+  constructor() {
+    super('Naukri token expired — please reconnect your account')
+    this.name = 'TokenExpiredError'
+  }
+}
+
 // Known API path segments from APK reverse engineering
 const PATHS = {
   LOGIN:               '/central-login-services/v0/port-login',
@@ -377,6 +388,11 @@ export class NaukriClient {
         console.log(`${L} GET ${url}`)
         const res = await fetch(url, { headers: this.headers() })
         console.log(`${L}   → HTTP ${res.status}`)
+        // 401 anywhere = token expired — throw immediately, no retry
+        if (res.status === 401) {
+          console.log(`${L} ✗ HTTP 401 — token expired`)
+          throw new TokenExpiredError()
+        }
         if (!res.ok) continue
         const data = await res.json()
         // Multiple response shapes across API versions
@@ -401,6 +417,7 @@ export class NaukriClient {
           }
         }
       } catch (err) {
+        if (err instanceof TokenExpiredError) throw err  // propagate up
         console.log(`${L}   → threw: ${err}`)
         continue
       }
@@ -424,6 +441,11 @@ export class NaukriClient {
         console.log(`${L} GET ${url}`)
         const res = await fetch(url, { headers: this.headers() })
         console.log(`${L}   → HTTP ${res.status}`)
+        // 401 = token expired — stop and propagate
+        if (res.status === 401) {
+          console.log(`${L} ✗ HTTP 401 — token expired`)
+          throw new TokenExpiredError()
+        }
         if (!res.ok) {
           const txt = await res.text()
           console.log(`${L}   → body: ${txt.slice(0, 200)}`)
@@ -437,6 +459,7 @@ export class NaukriClient {
           return String(id)
         }
       } catch (err) {
+        if (err instanceof TokenExpiredError) throw err  // propagate up
         console.log(`${L}   → threw: ${err}`)
         continue
       }

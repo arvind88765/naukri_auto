@@ -7,6 +7,7 @@ import Navbar from '@/components/Navbar'
 import JobCard from '@/components/JobCard'
 
 interface ProfileData {
+  tokenExpired?: boolean
   user: {
     name: string
     email: string
@@ -89,6 +90,7 @@ export default function DashboardPage() {
   const [triggerResult, setTriggerResult] = useState<string | null>(null)
   const [autoApply, setAutoApply] = useState<boolean>(false)
   const [togglingAuto, setTogglingAuto] = useState(false)
+  const [tokenExpired, setTokenExpired] = useState(false)
 
   const fetchData = useCallback(async () => {
     try {
@@ -100,6 +102,8 @@ export default function DashboardPage() {
         const p = await profileRes.json()
         setProfile(p)
         setAutoApply(p.user?.auto_apply_enabled ?? p.user?.autoApplyEnabled ?? false)
+        // Check if Naukri token has expired
+        if (p.tokenExpired) setTokenExpired(true)
       }
       if (queueRes.ok) setQueue(await queueRes.json())
     } finally {
@@ -186,6 +190,51 @@ export default function DashboardPage() {
     <>
       <Navbar />
       <main style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px' }}>
+
+        {/* Token expired banner */}
+        {tokenExpired && (
+          <div style={{
+            background: 'linear-gradient(135deg, #2d1a1a, #3d2020)',
+            border: '1px solid #ff4444',
+            borderRadius: 12,
+            padding: '16px 20px',
+            marginBottom: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 24 }}>🔐</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: '#ff7070', marginBottom: 2 }}>
+                  Naukri session expired
+                </div>
+                <div style={{ fontSize: 13, color: '#bb8080' }}>
+                  Your Naukri token has expired. Auto-apply is paused — reconnect to resume.
+                </div>
+              </div>
+            </div>
+            <a
+              href="/onboard?reconnect=1"
+              style={{
+                background: '#ff4444',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '10px 20px',
+                fontWeight: 700,
+                fontSize: 14,
+                cursor: 'pointer',
+                textDecoration: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Reconnect Naukri →
+            </a>
+          </div>
+        )}
 
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32, flexWrap: 'wrap', gap: 16 }}>

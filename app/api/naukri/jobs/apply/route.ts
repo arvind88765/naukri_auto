@@ -11,7 +11,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { supabaseAdmin } from '@/lib/supabase'
 import { runAutoApplyEngine } from '@/lib/auto-apply-engine'
-import { NaukriClient } from '@/lib/naukri-client'
+import { NaukriClient, TokenExpiredError } from '@/lib/naukri-client'
 import { decrypt } from '@/lib/encryption'
 
 export async function POST() {
@@ -45,6 +45,17 @@ export async function POST() {
         console.log('[ApplyRoute] could not fetch cvId — continuing without it')
       }
     } catch (err) {
+      if (err instanceof TokenExpiredError) {
+        console.log('[ApplyRoute] token expired — clearing from DB')
+        await supabaseAdmin
+          .from('users')
+          .update({ naukri_token: null, naukri_cv_id: null, naukri_token_expires_at: null })
+          .eq('id', user.id)
+        return NextResponse.json(
+          { error: 'Naukri session expired. Please reconnect your account.', tokenExpired: true },
+          { status: 401 }
+        )
+      }
       console.error('[ApplyRoute] on-demand cvId fetch failed:', err)
     }
   }

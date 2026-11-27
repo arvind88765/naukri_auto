@@ -10,7 +10,7 @@
  * 6. Log results
  */
 
-import { NaukriClient, NaukriJob } from './naukri-client'
+import { NaukriClient, NaukriJob, TokenExpiredError } from './naukri-client'
 import { NaukriWebClient, WebJob } from './naukri-web-client'
 import { scoreMatch, tailorResume } from './resume-ai'
 import { supabaseAdmin, User } from './supabase'
@@ -134,6 +134,11 @@ export async function runAutoApplyEngine(userId: string): Promise<EngineResult> 
   const tokenValid = await client.isTokenValid()
   if (!tokenValid) {
     result.errors.push('Naukri session expired — please reconnect from the dashboard')
+    // Clear expired token from DB so dashboard shows re-connect banner
+    await supabaseAdmin
+      .from('users')
+      .update({ naukri_token: null, naukri_cv_id: null, naukri_token_expires_at: null })
+      .eq('id', user.id)
     if (syncLog) {
       await supabaseAdmin.from('sync_logs').update({ status: 'error', error_message: result.errors.join(', '), ended_at: new Date().toISOString() }).eq('id', syncLog.id)
     }
