@@ -11,7 +11,24 @@
  * User copies cookies from Chrome DevTools > Application > Cookies
  */
 
+import crypto from 'crypto'
+
 const BASE = 'https://www.naukri.com'
+
+const NAUKRI_RSA_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALrlQ+djR0RjJwBF1xuisHmdFv334MIm
+K6LgzJhmLhN7B5yuEyaKoasgXQk3+OQglsOaBxEJ0j5PcTL3nbOvt80CAwEAAQ==
+-----END PUBLIC KEY-----`
+
+function generateNkparam(pageType: string = 'srp'): string {
+  const timestamp = Date.now()
+  const plaintext = `v0|${timestamp}|121_${pageType}`
+  const encrypted = crypto.publicEncrypt(
+    { key: NAUKRI_RSA_PUBLIC_KEY, padding: crypto.constants.RSA_PKCS1_PADDING },
+    Buffer.from(plaintext, 'utf-8')
+  )
+  return encrypted.toString('base64')
+}
 
 export type WebConnectResult = {
   success: boolean
@@ -174,6 +191,7 @@ export class NaukriWebClient {
     page?: number
     wfhMode?: boolean
   }): Promise<WebJobSearchResult> {
+    const L = '[NaukriWebClient.searchJobs]'
     const qp = new URLSearchParams({
       noOfResults: String(params.noOfResults || 20),
       urlType: 'search_by_keyword',
@@ -182,23 +200,40 @@ export class NaukriWebClient {
       location: params.location || '',
       experience: String(params.experience ?? 0),
       salary: String(params.salaryMin || 0),
-      pPage: String(params.page || 1),
+      pageNo: String(params.page || 1),
+      jobAge: '15',
+      nignbevent_src: 'jobsearchDeskGNB',
+      src: 'jobsearchDesk',
     })
-
     if (params.wfhMode) qp.set('wfhType', '2')
+
+    let nkparam: string
+    try { nkparam = generateNkparam('srp') } catch { return { jobDetails: [], noOfJobs: 0 } }
 
     try {
       const res = await fetch(
-        `${BASE}/jobapi/v2/list?${qp.toString()}`,
-        { headers: this.headers({ 'appid': '109' }) }  // appid 109 = job search
+        `${BASE}/jobapi/v3/search?${qp.toString()}`,
+        {
+          headers: this.headers({
+            'appid': '109',
+            'systemid': 'Naukri',
+            'gid': 'LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE',
+            'nkparam': nkparam,
+          })
+        }
       )
-      if (!res.ok) return { jobDetails: [], noOfJobs: 0 }
-      const data = await res.json()
-      return {
-        jobDetails: data.jobDetails || data.jobs || [],
-        noOfJobs: data.noOfJobs || data.total || 0,
+      console.log(`${L} HTTP ${res.status}`)
+      if (!res.ok) {
+        const txt = await res.text()
+        console.log(`${L} err body: ${txt.slice(0, 300)}`)
+        return { jobDetails: [], noOfJobs: 0 }
       }
-    } catch {
+      const data = await res.json()
+      const jobs = data.jobDetails || data.jobs || []
+      console.log(`${L} ✓ jobs=${jobs.length}`)
+      return { jobDetails: jobs, noOfJobs: data.noOfJobs || data.total || 0 }
+    } catch (err) {
+      console.log(`${L} threw: ${err}`)
       return { jobDetails: [], noOfJobs: 0 }
     }
   }

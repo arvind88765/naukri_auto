@@ -11,8 +11,33 @@
  * - Search impressions: cloudgateway-apply/profile-performance/v0/jobseeker/self/search-impressions
  */
 
+import crypto from 'crypto'
+
 const NMA_BASE = 'https://www.nma.mobi'
 const NAUKRI_BASE = 'https://www.naukri.com'
+
+// RSA public key from NopeRi reverse engineering (nkparam signing)
+const NAUKRI_RSA_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALrlQ+djR0RjJwBF1xuisHmdFv334MIm
+K6LgzJhmLhN7B5yuEyaKoasgXQk3+OQglsOaBxEJ0j5PcTL3nbOvt80CAwEAAQ==
+-----END PUBLIC KEY-----`
+
+/**
+ * Generate nkparam — required by /jobapi/v3/search
+ * Algorithm (reverse engineered from NopeRi / Naukri's obfuscated JS):
+ *   plaintext = "v0|{timestamp_ms}|121_{pageType}"
+ *   encrypted = RSA_PKCS1_v1.5_encrypt(plaintext, PUBLIC_KEY)
+ *   nkparam   = base64(encrypted)
+ */
+function generateNkparam(pageType: string = 'srp'): string {
+  const timestamp = Date.now()
+  const plaintext = `v0|${timestamp}|121_${pageType}`
+  const encrypted = crypto.publicEncrypt(
+    { key: NAUKRI_RSA_PUBLIC_KEY, padding: crypto.constants.RSA_PKCS1_PADDING },
+    Buffer.from(plaintext, 'utf-8')
+  )
+  return encrypted.toString('base64')
+}
 
 /**
  * Thrown when Naukri returns HTTP 401 — token has expired.
@@ -38,10 +63,12 @@ const PATHS = {
   CLICK_TRACK:         '/cloudgateway-ccs/url-shortener-services/v0/track/click-track',
   NOTIFICATION_TMPL:   '/cloudgateway-nc-js/nc-services/v0/template/',
   AIDO_BASE:           '/cloudgateway-naukri360/micro-learning-services/v0/api/v1/',
-  // Job search — v1 works without nkparam; v3+ requires signed token Akamai can't bypass
+  // Job search — v3 is the real endpoint (requires nkparam RSA token)
+  // v1/list and v2/list are both 404 as of Aug 2026
+  JOB_SEARCH_V3:       '/jobapi/v3/search',
   JOB_SEARCH_V1:       '/jobapi/v1/list',
   JOB_SEARCH_V2:       '/jobapi/v2/list',
-  JOB_SEARCH:          '/jobapi/v2/list',
+  JOB_SEARCH:          '/jobapi/v3/search',
   // Apply flow — from SDUIApplyRenderActivity + postApplyBottomSheet RE
   JOB_APPLY:           '/apply-aggregator/job-apply/v0/jobs',
   // Recruiter actions — RecruiterActionService from DEX
@@ -535,6 +562,7 @@ export class NaukriClient {
   }): Promise<JobSearchResult> {
     const L = '[NaukriClient.searchJobs]'
 
+    // v3/search uses pageNo (not pPage), and needs nkparam + gid headers
     const qp = new URLSearchParams({
       noOfResults: String(params.noOfResults || 20),
       urlType: 'search_by_keyword',
@@ -543,49 +571,70 @@ export class NaukriClient {
       location: params.location || '',
       experience: String(params.experience ?? 0),
       salary: String(params.salaryMin || 0),
-      pPage: String(params.page || 1),
+      pageNo: String(params.page || 1),
+      jobAge: '15',                           // last 15 days
+      nignbevent_src: 'jobsearchDeskGNB',
+      src: 'jobsearchDesk',
     })
     if (params.wfhMode) qp.set('wfhType', '2')
 
-    // Try v1 first (works without nkparam), then fall back to v2
-    const endpoints = [
-      `${NAUKRI_BASE}${PATHS.JOB_SEARCH_V1}?${qp.toString()}`,
-      `${NAUKRI_BASE}${PATHS.JOB_SEARCH_V2}?${qp.toString()}`,
-    ]
+    const url = `${NAUKRI_BASE}${PATHS.JOB_SEARCH_V3}?${qp.toString()}`
+    console.log(`${L} GET /jobapi/v3/search | keyword="${params.keyword}" location="${params.location || ''}"`)
 
-    for (const url of endpoints) {
-      try {
-        const shortUrl = url.split('?')[0]
-        console.log(`${L} GET ${shortUrl} | keyword="${params.keyword}" location="${params.location || ''}"`)
-        const res = await fetch(url, {
-          headers: {
-            ...this.headers(),
-            'Referer': 'https://www.naukri.com/jobs-in-india',
-            'Accept': 'application/json, text/plain, */*',
-          },
-        })
-        console.log(`${L}   → HTTP ${res.status}`)
-        if (!res.ok) {
-          const txt = await res.text()
-          console.log(`${L}   → body (err): ${txt.slice(0, 300)}`)
-          continue  // try next endpoint
-        }
-        const data = await res.json()
-        const jobs = data.jobDetails || data.jobs || []
-        const total = data.noOfJobs || data.total || 0
-        console.log(`${L}   → jobs=${jobs.length} noOfJobs=${total} | keys: ${Object.keys(data).join(', ')}`)
-        if (jobs.length > 0 || total >= 0) {
-          return { jobDetails: jobs, noOfJobs: total, urlWord: data.urlWord }
-        }
-        // Got 200 but 0 jobs — log the full response for diagnosis
-        console.log(`${L}   → 200 but 0 jobs, raw: ${JSON.stringify(data).slice(0, 400)}`)
-      } catch (err) {
-        console.log(`${L}   → threw: ${err}`)
-      }
+    // Generate fresh nkparam token (RSA PKCS1v1.5 signed timestamp)
+    let nkparam: string
+    try {
+      nkparam = generateNkparam('srp')
+      console.log(`${L}   → nkparam generated: ${nkparam.slice(0, 20)}...`)
+    } catch (err) {
+      console.log(`${L}   → nkparam generation failed: ${err}`)
+      return { jobDetails: [], noOfJobs: 0 }
     }
 
-    console.log(`${L} ✗ all search endpoints returned 0 jobs`)
-    return { jobDetails: [], noOfJobs: 0 }
+    try {
+      const res = await fetch(url, {
+        headers: {
+          // Base auth headers (without Content-Type — GET request)
+          'Authorization': `Bearer ${this.token}`,
+          'Cookie': `nauk_at=${this.token}`,
+          // Search-specific headers from NopeRi RE
+          'appid': '109',                            // job search appid
+          'clientid': 'd3skt0p',
+          'systemid': 'Naukri',
+          'gid': 'LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE',
+          'nkparam': nkparam,
+          // Browser headers
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-IN,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Origin': 'https://www.naukri.com',
+          'Referer': 'https://www.naukri.com/jobs-in-india',
+          'x-requested-with': 'XMLHttpRequest',
+          'sec-fetch-site': 'same-origin',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-dest': 'empty',
+        },
+      })
+      console.log(`${L}   → HTTP ${res.status}`)
+      if (!res.ok) {
+        const txt = await res.text()
+        console.log(`${L}   → body (err): ${txt.slice(0, 400)}`)
+        return { jobDetails: [], noOfJobs: 0 }
+      }
+      const data = await res.json()
+      const jobs = data.jobDetails || data.jobs || []
+      const total = data.noOfJobs || data.total || 0
+      console.log(`${L}   → ✓ jobs=${jobs.length} noOfJobs=${total} | keys: ${Object.keys(data).join(', ')}`)
+      if (jobs.length === 0 && total === 0) {
+        // Log raw response for diagnosis
+        console.log(`${L}   → 200 but 0 jobs, raw: ${JSON.stringify(data).slice(0, 500)}`)
+      }
+      return { jobDetails: jobs, noOfJobs: total, urlWord: data.urlWord }
+    } catch (err) {
+      console.log(`${L}   → threw: ${err}`)
+      return { jobDetails: [], noOfJobs: 0 }
+    }
   }
 
   /**
